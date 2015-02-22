@@ -171,7 +171,39 @@ The sparsity change is the harder one.  There are probably several ways of doing
 
 \subsection{Relationship to pairwise associations}
 Is this related to topic merging with PMI or other associations?
-I guess it comes through mostly through the sparsity term.
+It has to come through the sparsity-promoting term.
+
+The ``joint-occur'' ePMI is
+\[ \frac{N^2 \sum_d n_{dj} n_{dk}}{n_j n_k \sum_d n_d^2} \]
+
+the thing this looks closest to is the Renyi-2 forms, especially exponentiated renyi-2, just the difference in the squared L2 norms.
+
+\begin{align} S^{new}-S^{old} &= 
+\sum_d ||\theta^{new}_d||^2 - ||\theta^{old}_d||^2
+\\
+&= \sum_d (\theta_j+\theta_k)^2 - \theta_j^2 - \theta_k^2
+= \sum_d 2\theta_j\theta_k = 2 \sum_d \frac{n_{dj} n_{dk}}{n_d^2}
+\end{align}
+
+Here's the closest I can get their forms.  Ignore all $n_d$ terms---this is legitimate if all documents are the same size, then these terms can be collected and moved out of sums as constants.  Then the PMI looks like
+\[ PMI = \log \sum_d n_{dj} n_{dk} 
+     - \underbrace{(\log n_j + \log n_k)}_{\text{normalization factor}} \]
+and the $F$ delta takes the form, assuming we're using the $\log(S^{new}-S^{old})$ from the above,
+\begin{align} F_{change} &= 
+        \log\sum_d n_{dj} n_{dk}  + \left[
+        n_j \log \frac{n_j}{n_j+n_k} +
+        n_k \log \frac{n_k}{n_j+n_k}        
+         \right]
+\\
+&=      \log\sum_d n_{dj} n_{dk}  - 
+            \underbrace{(n_j+n_k) H(\text{$J$ vs $K$})}_{\text{normalization factor}}
+\end{align}
+
+Roughly speaking, both equations reward high co-occurrence counts, while penalizing large topics, but the normalization happens in rather different ways.  PMI penalizes the log topic sizes.  F penalizes the topic size, but weighted by their relative sizes.   First off, note that entropy is always non-negative and the right term is a negative entropy, for the random variable ``is this topic $j$ or $k$?'', conditional on being either.  So it's negative, multiplied by the combined topic size $(n_j+n_k)$; thus it has some normalization for the topic sizes.  The preference against large topics is stronger if the entropy is high, i.e., if the topics are similar sizes.  But if the topics are very skewed, the entropy is low so the penalization is weaker.
+
+\subsection{todo: dirichlet derivation}
+
+chong wang's split-merge for hdp -- might be relevant?  jain and neal have lots of factorial stuff for the DPMM case.  i think this is for all the log-gamma functions which manifest your sparsity control under collapsed dir-mult inference.
 
 \section{Justification for one topic per word}
 
