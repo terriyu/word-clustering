@@ -59,36 +59,31 @@ This mapping can also be interpreted as a hard clustering (a partition) over the
 
 Given a mapping, inference is trivial.  $P(z_t|w_t)$ is nonzero for only when $z_t=k(w_t)$.  There are no priors on either $\theta$ or $\phi$, so their estimates are simple maximum-likelihood relative frequency calculations.  For example, $\theta_{dk}$ is the number of $z_t=k$ within $t \in d(t)$, divided by the number of tokens in $d$.
 
-We'll use some shortcut notation.  $w_t$ is one token at position $t$.  $w_d$ are the tokens in document $d$.  $w_k$ is the ``token text'',\footnote{that Heinrich ?2007 calls it} meaning all tokens in the corpus that have topic $k$.
-
-$\til{w}_d$ refers to a vector of wordtype counts for document $d$.  It has length $V$ (as opposed to $w_d$ which has length $n_d$, the length of the documetn).  %Finally, $\bar{w_d}$ refers to the wordtype empirical probabilities in document $d$, where each $\bar{w_d}_v = \til{w}_{dv}/n_d$ for wordtype $v$.
-
-The same quantities also exist for token texts: $\til{w}_k$ are the wordcounts for topic $k$.  Since there are no priors we estimate $\phi_{v|k}$ as $\til{w}_{kv}/n_k$ where $n_k$ is the total number of tokens in that topic ($n_k=\sum_v \til{w}_{kv}$).
+We'll use some shortcut notation.  $w_t$ is one token at position $t$.  $w_d$ are the tokens in document $d$.  $w_k$ is the ``token text'',\footnote{that Heinrich ?2007 calls it} meaning all tokens in the corpus that have topic $k$.  Let $n$ denote numbers of tokens, like $n_{kv}$ the number of tokens with topic $k$ and wordtype $v$.
 
 Total likelihood of the corpus, given a mapping, can be expressed in terms of documents
 
-\[ \log P(w) = \sum_d \log P(w_d) = \sum_d \sum_v \til{w}_{dv} \log \frac{\til{w}_{kv}}{n_k} \]
+\[ \log P(w) = \sum_d \log P(w_d) = \sum_d \sum_v n_{dv} \log \frac{n_{kv}}{n_k} \]
 
 You could also write it in terms of topic-texts
 
-\[ \log P(w) = \sum_k \log P(w_k) = \sum_k \sum_v \til{w}_{kv} \log \frac{\til{w}_{kv}}{n_k} \]
+\[ \log P(w) = \sum_k \log P(w_k) = \sum_k \sum_v n_{kv} \log \frac{n_{kv}}{n_k} \]
 
 As it stands, you can't actually learn anything interesting with this model.  There's no reason for co-occurring words to want to belong to the same topic.
 In LDA, the Dirichlet prior on $\theta$ encourages this: it causes documents to tend to include only a subset of topics, and thus topics need to include co-occurring words in order to explain the data.
 
-Let's abstract this into a document sparsity function, $S(\theta_d)$, which is higher if more of the probability mass of the topics in a document tend to be in a subset of topics, or tend to have a peaked distribution.  One way to define this is a Dirichlet unnorm-log-density function, as LDA uses,
+Let's abstract this into a document sparsity function, $S(\theta_d)$, which is higher if more of the probability mass of the topics in a document tend to be in a subset of topics, or tend to have a peaked distribution.  One way to define this is a Dirichlet unnorm-log-density function, as LDA uses, where you can set all $\alpha_k<1$ to prefer sparsity,
+\[ S(\theta_d; \alpha) = \sum_k \left(\alpha_k - 1\right) \log \theta_{dk} \]
 
-\[ S(\theta_d; \alpha) = \left(\alpha - 1\right) \log \theta_{dk} \]
+Of course, if we use this, $\theta_d$ is not allowed to have zeros.  We'd like to analyze this case, and we could do it by saying instead that $\theta_d$ is a latent variable that gets a posterior distribution compromising between the uniform prior $\alpha/(\sum\alpha_k)$ versus the empirical doc-topic distribution $[n_{dk}/n_d]_k$, and define the sparsity measurement function instead as $S(z_d;\alpha)$; this can totally be done with a collapsed dirichlet-multinomial, but tbd how to work it out in terms of agglomerative merging.
 
-Of course, if we use this, $\theta_d$ is not allowed to have zeros.  We'd like to analyze this case, and we could do it by saying instead that $\theta_d$ is a latent variable that gets a posterior distribution compromising between the uniform prior $\alpha/K$ versus the empirical doc-topic distribution $\til{z}_d/n_d$, and define the sparsity measurement function instead as $S(z_d;\alpha)$; this can totally be done with a collapsed dirichlet-multinomial, but I don't know how to work it out in terms of agglomerative merging.
-
-Here's another approach.  Let's keep with the trivial MLE estimators for $\theta$, namely that $\theta_d=\bar{z_d}$.  To promote doc-topic sparsity, impose some sort of made-up function on it ... say, a Renyi entropy.  For example, the Shannon entropy 
-\[ S_1(\theta_d) = -\sum_k \theta_k \log \theta_{dk} \]
-or the Renyi-0 entropy
-\[ S_0(\theta_d) = -\log 1\{\theta_d>0\} = -\log ||\theta_d||_0\]
-or the Renyi-2 entropy
-\[ S_2(\theta_d) = -\log \sum_k \theta_{dk}^2 = -\log ||\theta_d||^2_2 \]
-etc.
+Here's another approach.  Let's keep with the trivial MLE estimators for $\theta$, namely that $\theta_d=n_{dk}/n_d$.  To promote doc-topic sparsity, impose some sort of made-up function $S$ on it, where higher $S$ indicates more sparsity.  For example, the Shannon negentropy,
+\[ S_1(\theta_d) = \sum_k \theta_k \log \theta_{dk} \]
+or the Renyi-0 negentropy, which just cares about the number of nonzero components,
+\[ S_0(\theta_d) = -\log \sum_k 1\{\theta_{dk}>0\} = -\log ||\theta_d||_0\]
+or the Renyi-2 negentropy (``collision''/``gini''), which is the chance a pair of tokens have the same topic,
+\[ S_2(\theta_d) = \log \sum_k \theta_{dk}^2 = \log ||\theta_d||^2_2 \]
+etc.  These all handle zeros just fine (shannon requires $0\log 0\equiv 0$).
 
 Then the overall optimization objective for learning a mapping $k(.)$ is
 \[ F = \lambda S(\theta) + \log P(w) \]
@@ -98,12 +93,85 @@ where $S(\theta) = \sum_d S(\theta_d)$, and $\lambda$ is a hyperparameter to con
 
 Initialize $K=V$ topics, with each word as its own topic.  Greedily merge pairs of topics to improve the objective.  Can the objective improvement be calculated rapidly?
 
-Say the candidate merge pair is topics $k$ and $j$, and we're considering the improvement $F_{new}-F_{old}$.  $P_{new}-P_{old}$ in terms of topic texts has everything cancelling except the topic texts for the merge: $w_j$ and $w_k$.  Let $w(k)$ be the reverse map of $k(w)$, where $w(k)$ is the set of wordtypes with nonzero probability under topic $k$.
+Say the candidate merge pair is topics $k$ and $j$, and we're considering the improvement 
+\[F_{new}-F_{old} = S_{new}-S_{old} + \log P_{new}-\log P_{old}\]
 
+\subsection{Change to topic-text likelihood}
+First analyze $\log P_{new}-\log P_{old}$ in terms of topic texts. The only parts that don't cancel are topic texts for the merge: $w_j$ and $w_k$.
+
+Let $w(k)$ be the reverse map of $k(w)$, where $w(k)$ is the set of wordtypes with nonzero probability under topic $k$.
+The old topic-text logprob for $k$ is 
+ \[ \ell_k = \sum_{v \in w(k)} n_v \log \frac{n_v}{n_k} 
+  = \sum_{v\in w(k)} n_v \log n_v - n_v \log n_k
+  = \left(\sum_{v\in w(k)} n_v \log n_v\right) - n_k \log n_k
+  \]
+and similarly for $j$.  The new topic-text logprob is
+  \[\ell_{j \cup k} = \sum_{v \in w(k) \cup w(j)} n_v \log \frac{n_v}{n_j+n_k} = 
+    \left(\sum_{v \in w(k) \cup w(j)} n_v \log  n_v\right) - (n_j+n_k) \log (n_j+n_k)\]
+Then
 \begin{align}
- P_{new}-P_{old} &= \sum_v (n_{jv}+n_{kv}) \log \frac{n_v}{n_j+n_k} - 
+  \log P_{new}-\log P_{old} 
+  &= \ell_{j \cup k} - \ell_k - \ell_j
+=
+  n_k \log \frac{n_k}{n_j+n_k} + n_j \log \frac{n_j}{n_j+n_k} \label{e:pmerge}
 \end{align}
+The lexical terms $n_v \log n_v$ all cancel.  It doesn't matter what the words are, or their distributions within the topics.  All that matters is the relative sizes of the two topics.  One way to think of this equation is as the size of the new topic, times the negative entropy of the binary variable of whether $k$ or $j$ was the original topic text.  Thus it prefers the merging topics with very different sizes, or topics where both are small.  Here's a plot of equation \ref{e:pmerge}:
+\begin{center}
+\includegraphics[width=3in]{contours.pdf}
+\end{center}
+This value is always negative---you're asking to blunt the two distributions into a worse, coarser one, so it's a question of picking a not-too-bad merge.
 
+
+\subsection{Change to sparsity}
+
+By contrast, co-occurrence information is relevant to the sparsity term $S(\theta)=\sum_d S(\theta_d)$.  The merge can be thought of as moving from a model with $K$ topics to one with $K-1$ topics, so every vector $\theta_d$ shrinks.  For every document, if neither topic $j$ nor $k$ occurs in the document, $\theta_d$ doesn't change (beyond losing a zero entry).  If one occurs but not the other, again, $\theta_d$ doesn't change (beyond losing a zero entry and shuffling some indexes).  Only for documents having both, does it change: $\theta_d$ loses two entries, which are replaced by one entry that's the sum of them from before.
+
+In fact, in the axiomatic definition of entropy,\footnote{\url{http://www.stat.cmu.edu/~cshalizi/350/2008/lectures/06a/lecture-06a.pdf}} the first two cases are defined to not change entropy; the third decreases entropy, i.e., increases our sparsity function $S$.
+
+Let $D$ be the set of documents where both $j$ and $k$ occur.  Then the improvement for Renyi-0 negentropy is
+  \begin{align}
+  S^{new}_0-S^{old}_0
+  &= \sum_{d\in D} -\log ||\theta^{new}_d||_0 + \log ||\theta^{old}_d||_0
+  \\
+  &= \sum_{d\in D} \log \frac{x_d}{x_d-1}
+  \end{align}
+where $x_d$ is the number of non-zero topics in the old model.  The more documents the topics co-occur in, the more they want to merge; and documents with already a low number of topics give a greater gain.
+
+Or we could just use the 0-norms directly (exponentiated renyi-0)
+  \begin{align}
+  S^{new}_{e0}-S^{old}_{e0}
+  &= \sum_{d\in D} -||\theta^{new}_d||_0 + ||\theta^{old}_d||_0
+  = |D|
+  \end{align}
+
+For Shannon entropy it is
+  \begin{align}
+  S^{new}_1-S^{old}_1
+  &= \sum_{d \in D} (\theta_j+\theta_k) \log(\theta_j+\theta_k)
+      -\theta_j\log\theta_j-\theta_k\log\theta_k
+      \\
+  &= -\sum_{d \in D}
+        \theta_j \log \frac{\theta_j}{\theta_j+\theta_k}
+        +
+        \theta_k \log \frac{\theta_k}{\theta_j+\theta_k}
+      \\
+  &= -\sum_{d \in D} (\theta_j+\theta_k)
+      \left[
+      \frac{\theta_j}{\theta_j+\theta_k}\log\frac{\theta_j}{\theta_j+\theta_k}
+      +
+      \frac{\theta_k}{\theta_j+\theta_k}\log\frac{\theta_k}{\theta_j+\theta_k}
+      \right]
+  \end{align}
+For each document, this is the entropy for the choice between the two merged topics, weighted by their combined mass in the document; so this favors topics that have large and similar prevalences, when they co-occur.
+
+\subsection{Computation}
+The topic-text log-lik change is pretty simple to compute.
+
+The sparsity change is the harder one.  There are probably several ways of doing it.  Maybe track topic-pair statistics, each of which is the sum of doc-level topic-pair stats.  To initialize, iterate through all documents and increment all topic-pair stats for pairs of topics in the same document (at this point, all topics are single words, so this is like computing all word co-occurrences and doing a little more with them).  When merging, update the stats in the documents in the intersection of the topic supports; all other ones don't have to change, at least not on a doc level?
+
+\subsection{Relationship to pairwise associations}
+Is this related to topic merging with PMI or other associations?
+I guess it comes through mostly through the sparsity term.
 
 \section{Justification for one topic per word}
 
