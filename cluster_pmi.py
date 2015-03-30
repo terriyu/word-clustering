@@ -1,6 +1,6 @@
 from __future__ import division
 from collections import defaultdict
-import sys, math, re
+import sys, math, re, time
 
 ##### COMMAND LINE ARGUMENTS #####
 # Usage: python calculate_pmi.py
@@ -353,6 +353,27 @@ def greedy_cluster_complicated(docs, pdict, clusters, candidates, calculated, me
 
     return clusters, candidates, merged
 
+def score_clusters(pdict, docs, metric, c1, c2):
+    """
+    """
+    if metric == 'max':
+        score = max_single_pmi_score(pdict, c1, c2)
+    elif metric == 'min':
+        score = min_single_pmi_score(pdict, c1, c2)
+    elif metric == 'mean':
+        score = mean_pmi_score(pdict, c1, c2)
+    elif metric == 'geometric':
+        score = geometric_pmi_score(pdict, c1, c2)
+    elif metric == 'harmonic':
+        score = harmonic_epmi_score(pdict, c1, c2)
+    elif metric == 'disjunction':
+        score = disjunction_pmi_score(docs, set(c1), set(c2))
+    else:
+        print 'No known coherence metric specified'
+        return
+
+    return score
+
 def generate_score_table(pdict, docs, clusters, metric):
     """
     """
@@ -362,33 +383,20 @@ def generate_score_table(pdict, docs, clusters, metric):
     # Calculate initial score table
     for i in range(cluster_size):
         for j in range(i+1,cluster_size):
-            if metric == 'max':
-                score = max_single_pmi_score(pdict, clusters[i], clusters[j])
-            elif metric == 'min':
-                score = min_single_pmi_score(pdict, clusters[i], clusters[j])
-            elif metric == 'mean':
-                score = mean_pmi_score(pdict, clusters[i], clusters[j])
-            elif metric == 'geometric':
-                score = geometric_pmi_score(pdict, clusters[i], clusters[j])
-            elif metric == 'harmonic':
-                score = harmonic_epmi_score(pdict, clusters[i], clusters[j])
-            elif metric == 'disjunction':
-                score = disjunction_pmi_score(docs, set(clusters[i]), set(clusters[j]))
-            else:
-                print 'No known coherence metric specified'
-                return
+            score = score_clusters(pdict, docs, metric, clusters[i], clusters[j])
             # Note the cluster indices must be in a list (e.g. [i,j])
             # so that they are mutable
             candidates.append([[i, j], score])
 
     return candidates
 
-def greedy_merge(docs, pdict, clusters, metric, target_num_clusters, merges_per_iter):
+def greedy_merge(docs, pdict, clusters, metric, target_num_clusters, merges_per_iter, cache):
     """
     """
     # Generate initial score table
     candidates = generate_score_table(pdict, docs, clusters, metric)
 
+    # Sort score table
     if metric != 'min':
         # Sort so that highest scores are at beginning of list
         candidates.sort(key=lambda(x): x[1], reverse=True)
@@ -396,54 +404,73 @@ def greedy_merge(docs, pdict, clusters, metric, target_num_clusters, merges_per_
         # Sort so that lowest scores are at beginning of list
         candidates.sort(key=lambda(x): x[1], reverse=False)
 
-    #while len(clusters) > target_num_clusters:
-    # Merge top scoring cluster pair
-    for k in range(merges_per_iter):
-        if (len(candidates) == 0):
-            break
+    while len(clusters) > target_num_clusters:
+        # Merge top scoring cluster pair
+        for k in range(merges_per_iter):
+            if (len(candidates) == 0):
+                break
 
-        cm1 = candidates[0][0][0]
-        cm2 = candidates[0][0][1]
-        merge_score = candidates[0][1]
+            cm1 = candidates[0][0][0]
+            cm2 = candidates[0][0][1]
+            merge_score = candidates[0][1]
 
-        print "Merging clusters with score %s" % merge_score
-        print clusters[cm1], clusters[cm2]
-        new_cluster = clusters[cm1] + clusters[cm2]
-        del clusters[cm1]
-        del clusters[cm2-1]
-        clusters.append(new_cluster)
+            print "Merging clusters with score %s, iteration = %s" % (merge_score, k)
+            print clusters[cm1], clusters[cm2]
+            new_cluster = clusters[cm1] + clusters[cm2]
+            del clusters[cm1]
+            del clusters[cm2-1]
+            clusters.append(new_cluster)
 
-        # Update cluster indexes in candidates list
+            if cache:
+                # Delete entries from table, which contain merged clusters
+                for idx in xrange(len(candidates) - 1, -1, -1):
+                    cand = candidates[idx]
+                    i = cand[0][0]
+                    j = cand[0][1]
+                    if (i == cm1) or (i == cm2) or (j == cm1) or (j == cm2):
+                        del candidates[idx]
 
-        # Delete entries from table, which contain merged clusters
-        for idx in xrange(len(candidates) - 1, -1, -1):
-            cand = candidates[idx]
-            i = cand[0][0]
-            j = cand[0][1]
-            if (i == cm1) or (i == cm2) or (j == cm1) or (j == cm2):
-                del candidates[idx]
+                # Update cluster indexes in score table
+                for cand in candidates:
+                    # Note j is always larger than i
+                    i = cand[0][0]
+                    j = cand[0][1]
+                    if i > cm1:
+                        if i < cm2:
+                            i_updated = i - 1
+                        else:
+                            i_updated = i - 2
+                        cand[0][0] = i_updated
+                    if j > cm1:
+                        if j < cm2:
+                            j_updated = j - 1
+                        else:
+                            j_updated = j - 2
+                        cand[0][1] = j_updated
 
-        # Update cluster indexes in scoring table
-        for cand in candidates:
-            # Note j is always larger than i
-            i = cand[0][0]
-            j = cand[0][1]
-            if i > cm1:
-                if i < cm2:
-                    i_updated = i - 1
-                else:
-                    i_updated = i - 2
-                cand[0][0] = i_updated
-            if j > cm1:
-                if j < cm2:
-                    j_updated = j - 1
-                else:
-                    j_updated = j - 2
-                cand[0][1] = j_updated
+                cluster_size = len(clusters)
+                new_cluster_idx = cluster_size - 1
+                # Add scores for new cluster
+                for i in range(cluster_size - 1):
+                    # Note the cluster indices must be in a list (e.g. [i,j])
+                    # so that they are mutable
+                    score = score_clusters(pdict, docs, metric, clusters[new_cluster_idx], clusters[i])
+                    candidates.append([[i, new_cluster_idx], score])
+            else:
+                # No caching, re-generate initial score table
+                candidates = generate_score_table(pdict, docs, clusters, metric)
+
+            # Sort score table
+            if metric != 'min':
+                # Sort so that highest scores are at beginning of list
+                candidates.sort(key=lambda(x): x[1], reverse=True)
+            else:
+                # Sort so that lowest scores are at beginning of list
+                candidates.sort(key=lambda(x): x[1], reverse=False)
 
     return clusters
 
-def calculate_clusters(docs, pdict, single_counts, vocab, metric, target_num_clusters, use_freq_words=False, num_freq_words=100, merges_per_iter=1):
+def calculate_clusters(docs, pdict, single_counts, vocab, metric, target_num_clusters, use_freq_words=False, num_freq_words=100, merges_per_iter=1, cache=True):
     """ Calculate clusters
 
         Options:
@@ -476,8 +503,7 @@ def calculate_clusters(docs, pdict, single_counts, vocab, metric, target_num_clu
         for v_word in vocab:
             clusters.append([v_word])
 
-    while len(clusters) > target_num_clusters:
-        clusters = greedy_merge(docs, pdict, clusters, metric, target_num_clusters, merges_per_iter)
+    clusters = greedy_merge(docs, pdict, clusters, metric, target_num_clusters, merges_per_iter, cache)
 
     return clusters
 
@@ -670,11 +696,15 @@ num_clusters = int(sys.argv[3])
 print "Target number of clusters = %s" % num_clusters
 print "Calculating clusters..."
 
+ti = time.time()
 clusters = calculate_clusters(documents, pmi_lookup, doc_single_counts, vocabulary, scoring_metric, num_clusters, use_freq_words=False, num_freq_words=500, merges_per_iter=1)
+tf = time.time()
 
 print "\nUsed %s metric, clusters found:" % scoring_metric
 
 print_clusters(pmi_lookup, doc_single_counts, clusters, 20)
+
+print "Clustering took %s seconds" % (tf-ti)
 
 #print_top_pmi_for_freq_words(pmi_dict, 5)
 #print_top_pmi_pairs(pmi_dict, vocabulary, 20)
