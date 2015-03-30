@@ -10,9 +10,18 @@ import sys, math, re
 # sys.argv[2] - metric to use for clustering
 #               ('max', 'min', 'mean', 'geometric', 'harmonic', 'disjunction')
 
-##### TO DO #####
+##### ISSUES #####
 # Implement command line arguments with argparse?
-# Intentionally duplicate count pairs when constructing PMI table?
+
+# Currently, word pairs are duplicated in construction of PMI table
+# i.e. pmi_dict[wi][wj] = pmi_dict[wj][wi]
+# Should we keep it this way?
+
+# For any metric that involves averaging over word pairs,
+# there is the possibility that a word pair has no entry
+# in the PMI lookup table.
+# Currently, if that is the case, the score is considered to be zero.
+# WRONG??
 
 ##### GLOBAL CONSTANTS #####
 
@@ -26,34 +35,24 @@ VOCAB_CUTOFF = 5
 # to be included in the list of top words
 TOP_WORDS_CUTOFF = 10
 
-# Number of clusters to generate
-# May want to change this to command line argument later
-NUM_CLUSTERS = 10
-
 # File to use for stop words
 # Format is one word per line
 # May want to change this to command line argument later
 STOP_WORD_FILE = 'stop_lists/mallet_stop.txt'
+
+# Punctuation to remove from documents
+PUNCT_REMOVE = set([r'\.', r'\?', r'\(', r'\)', '\"', '\'', ',', '!', ':'])
+
+# Scoring metrics available
+VALID_METRICS = set(['min', 'max', 'mean', 'geometric', 'harmonic', 'disjunction'])
 
 ##### GLOBAL VARIABLES #####
 
 # Stop word list - each element is a string
 stop_words = set()
 
-# Punctuation to remove from documents
-punctuation = set([r'\.', r'\?', r'\(', r'\)', '\"', '\'', ',', '!', ':'])
-
-# Single frequency count for words in vocabulary
-# Keys are words, values are integer counts 
-single_counts = defaultdict(int)
-
-# Pair frequency count for words in vocabulary
-# Keys are tuples (word1, word2), values are integer counts 
-# The tuples are sorted in alphabetical order such that word1 < word2
-pair_counts = defaultdict(int)
-
-# List of words in vocabulary
-vocab = []
+# Set of words in vocabulary
+vocabulary = set() 
 
 # List containing data about documents
 # Each element of list is a dictionary containing info for a single document 
@@ -62,12 +61,21 @@ vocab = []
 # doc['label'] = 'English'
 # doc['text'] = 'To the Congress of the United States:' (original text)
 # doc['ctext'] = 'congress united states' (cleaned text) 
-docs = []
+documents = []
+
+# Document-level counts for single words
+# Keys are words, values are integer counts 
+doc_single_counts = defaultdict(int)
+
+# Document-level counts for pairs of words
+# Keys are tuples (word1, word2), values are integer counts 
+# The tuples are sorted in alphabetical order such that word1 < word2
+doc_pair_counts = defaultdict(int)
 
 # Dictionary containing pre-computed PMI for all word pairs in vocabulary
 # Key is a word in the vocabulary, value is a dictionary of word-PMI key-value pairs
 # e.g. pmi_dict['food']['prices'] = 1.5
-pmi_dict = defaultdict(dict)
+pmi_lookup = defaultdict(dict)
 
 ##### DATA PROCESSING METHODS #####
 
@@ -76,7 +84,7 @@ def clean(text):
         stop words, extra spaces
     """
     # Remove punctuation
-    for symbol in punctuation:
+    for symbol in PUNCT_REMOVE:
         text = re.sub(symbol, '', text)
     # Remove capitalization
     text = text.lower()
@@ -89,7 +97,7 @@ def clean(text):
             
 ##### SCORING METHODS ######
 
-def pmi_boolbool(num_docs, wi, wj):
+def pmi_boolbool(single_counts, pair_counts, N_docs, wi, wj):
     """ Calculate PMI of two words wi, wj and normalizes by number of documents
 
         - Uses logarithm base 2
@@ -105,7 +113,7 @@ def pmi_boolbool(num_docs, wi, wj):
     # The single and pair counts must be non-zero
     # otherwise, the PMI is undefined
     if (Nij != 0) and (Ni != 0) and (Nj != 0):
-        return math.log(num_docs*Nij/(Ni*Nj), 2)
+        return math.log(N_docs*Nij/(Ni*Nj), 2)
     else:
         return None
 
@@ -121,9 +129,11 @@ def max_single_pmi_score(pdict, wlist1, wlist2):
         for word2 in wlist2:
             # Enforce alphabetical order in pair
             pair = tuple(sorted([word1, word2]))
-            if pair[0] in pdict and pair[1] in pdict[pair[0]]:
-                if pdict[pair[0]][pair[1]] > max_pmi:
-                    max_pmi = pdict[pair[0]][pair[1]]
+            wi = pair[0]
+            wj = pair[1]
+            if wi in pdict and wj in pdict[wi]:
+                if pdict[wi][wj] > max_pmi:
+                    max_pmi = pdict[wi][wj]
     return max_pmi
 
 def min_single_pmi_score(pdict, wlist1, wlist2):
@@ -138,9 +148,11 @@ def min_single_pmi_score(pdict, wlist1, wlist2):
         for word2 in wlist2:
             # Enforce alphabetical order in pair
             pair = tuple(sorted([word1, word2]))
-            if pair[0] in pdict and pair[1] in pdict[pair[0]]:
-                if pdict[pair[0]][pair[1]] < min_pmi:
-                   min_pmi = pdict[pair[0]][pair[1]]
+            wi = pair[0]
+            wj = pair[1]
+            if wi in pdict and wj in pdict[wi]:
+                if pdict[wi][wj] < min_pmi:
+                   min_pmi = pdict[wi][wj]
     return min_pmi
 
 def mean_pmi_score(pdict, wlist1, wlist2):
@@ -155,10 +167,12 @@ def mean_pmi_score(pdict, wlist1, wlist2):
         for word2 in wlist2:
             # Enforce alphabetical order in pair
             pair = tuple(sorted([word1, word2]))
-            if pair[0] in pdict and pair[1] in pdict[pair[0]]:
+            wi = pair[0]
+            wj = pair[1]
+            if wi in pdict and wj in pdict[wi]:
                 if total_pmi is None:
                     total_pmi = 0
-                total_pmi += pdict[pair[0]][pair[1]]
+                total_pmi += pdict[wi][wj]
     if total_pmi is not None:
         return total_pmi / (len(wlist1)*len(wlist2))
     else:
@@ -178,10 +192,12 @@ def geometric_pmi_score(pdict, wlist1, wlist2):
         for word2 in wlist2:
             # Enforce alphabetical order in pair
             pair = tuple(sorted([word1, word2]))
-            if pair[0] in pdict and pair[1] in pdict[pair[0]]:
+            wi = pair[0]
+            wj = pair[1]
+            if wi in pdict and wj in pdict[wi]:
                 if product_pmi is None:
                     product_pmi = 1     
-                pmi = pdict[pair[0]][pair[1]] 
+                pmi = pdict[wi][wj] 
                 # Check if PMI is negative
                 if pmi > 0:
                     product_pmi *= pmi 
@@ -213,10 +229,12 @@ def harmonic_epmi_score(pdict, wlist1, wlist2):
        for word2 in wlist2:
             # Enforce alphabetical order in pair
             pair = tuple(sorted([word1, word2]))
-            if pair[0] in pdict and pair[1] in pdict[pair[0]]:
+            wi = pair[0]
+            wj = pair[1]
+            if wi in pdict and wj in pdict[wi]:
                 if total_recip_epmi is None:
                     total_recip_epmi = 0
-                total_recip_epmi += 1/(2**pdict[pair[0]][pair[1]])
+                total_recip_epmi += 1/(2**pdict[wi][wj])
                 N += 1
     if total_recip_epmi is not None:
         return N/total_recip_epmi
@@ -262,22 +280,22 @@ def disjunction_pmi_score(docs, wset1, wset2):
 
 ###### CLUSTERING METHODS ######
 
-def greedy_cluster_complicated(docs, cdict, clusters, candidates, calculated, method, merges_per_iter):
+def greedy_cluster_complicated(docs, pdict, clusters, candidates, calculated, method, merges_per_iter):
     cluster_size = len(clusters)
 
     for i in range(cluster_size):
         for j in range(i+1,cluster_size):
             if (i not in calculated) or (j not in calculated): 
                 if method == 'max':
-                    score = max_single_pmi_score(cdict, clusters[i], clusters[j])
+                    score = max_single_pmi_score(pdict, clusters[i], clusters[j])
                 elif method == 'min':
-                    score = min_single_pmi_score(cdict, clusters[i], clusters[j])
+                    score = min_single_pmi_score(pdict, clusters[i], clusters[j])
                 elif method == 'mean':
-                    score = mean_pmi_score(cdict, clusters[i], clusters[j])
+                    score = mean_pmi_score(pdict, clusters[i], clusters[j])
                 elif method == 'geometric':
-                    score = geometric_pmi_score(cdict, clusters[i], clusters[j])
+                    score = geometric_pmi_score(pdict, clusters[i], clusters[j])
                 elif method == 'harmonic':
-                    score = harmonic_epmi_score(cdict, clusters[i], clusters[j])
+                    score = harmonic_epmi_score(pdict, clusters[i], clusters[j])
                 elif method == 'disjunction':
                     score = disjunction_pmi_score(docs, set(clusters[i]), set(clusters[j]))
                 else:
@@ -335,34 +353,51 @@ def greedy_cluster_complicated(docs, cdict, clusters, candidates, calculated, me
 
     return clusters, candidates, merged
 
-def greedy_cluster(docs, cdict, clusters, method, merges_per_iter):
+def generate_score_table(pdict, docs, clusters, metric):
+    """
+    """
     cluster_size = len(clusters)
     candidates = []
 
+    # Calculate initial score table
     for i in range(cluster_size):
         for j in range(i+1,cluster_size):
-            if method == 'max':
-                score = max_single_pmi_score(cdict, clusters[i], clusters[j])
-            elif method == 'min':
-                score = min_single_pmi_score(cdict, clusters[i], clusters[j])
-            elif method == 'mean':
-                score = mean_pmi_score(cdict, clusters[i], clusters[j])
-            elif method == 'geometric':
-                score = geometric_pmi_score(cdict, clusters[i], clusters[j])
-            elif method == 'harmonic':
-                score = harmonic_epmi_score(cdict, clusters[i], clusters[j])
-            elif method == 'disjunction':
+            if metric == 'max':
+                score = max_single_pmi_score(pdict, clusters[i], clusters[j])
+            elif metric == 'min':
+                score = min_single_pmi_score(pdict, clusters[i], clusters[j])
+            elif metric == 'mean':
+                score = mean_pmi_score(pdict, clusters[i], clusters[j])
+            elif metric == 'geometric':
+                score = geometric_pmi_score(pdict, clusters[i], clusters[j])
+            elif metric == 'harmonic':
+                score = harmonic_epmi_score(pdict, clusters[i], clusters[j])
+            elif metric == 'disjunction':
                 score = disjunction_pmi_score(docs, set(clusters[i]), set(clusters[j]))
             else:
                 print 'No known coherence metric specified'
                 return
+            # Note the cluster indices must be in a list (e.g. [i,j])
+            # so that they are mutable
             candidates.append([[i, j], score])         
 
-    if method != 'min':
+    return candidates
+
+def greedy_merge(docs, pdict, clusters, metric, target_num_clusters, merges_per_iter):
+    """ 
+    """
+    # Generate initial score table
+    candidates = generate_score_table(pdict, docs, clusters, metric) 
+
+    if metric != 'min':
+        # Sort so that highest scores are at beginning of list
         candidates.sort(key=lambda(x): x[1], reverse=True)
     else:
+        # Sort so that lowest scores are at beginning of list
         candidates.sort(key=lambda(x): x[1], reverse=False)
 
+    #while len(clusters) > target_num_clusters:
+    # Merge top scoring cluster pair
     for k in range(merges_per_iter):
         if (len(candidates) == 0):
             break
@@ -371,7 +406,6 @@ def greedy_cluster(docs, cdict, clusters, method, merges_per_iter):
         cm2 = candidates[0][0][1]
         merge_score = candidates[0][1]
 
-        # Merge clusters (do actual merge)
         print "Merging clusters with score %s" % merge_score 
         print clusters[cm1], clusters[cm2]
         new_cluster = clusters[cm1] + clusters[cm2]
@@ -389,6 +423,7 @@ def greedy_cluster(docs, cdict, clusters, method, merges_per_iter):
             if (i == cm1) or (i == cm2) or (j == cm1) or (j == cm2): 
                 del candidates[idx]
 
+        # Update cluster indexes in scoring table
         for cand in candidates:
             # Note j is always larger than i
             i = cand[0][0]
@@ -408,7 +443,16 @@ def greedy_cluster(docs, cdict, clusters, method, merges_per_iter):
 
     return clusters
 
-def calculate_clusters(docs, cdict, freq_dict, vocab, metric, use_freq_words=False, num_freq_words=100, merges_per_iter=1):
+def calculate_clusters(docs, pdict, single_counts, vocab, metric, target_num_clusters, use_freq_words=False, num_freq_words=100, merges_per_iter=1):
+    """ Calculate clusters
+
+        Options:
+        - Heuristic optimization using most frequent words
+        - Do multiple merges per iteration
+    """
+    if metric not in VALID_METRICS:
+        print 'No known coherence metric specified'
+        return
 
     clusters = [] 
 
@@ -416,9 +460,9 @@ def calculate_clusters(docs, cdict, freq_dict, vocab, metric, use_freq_words=Fal
         if num_freq_words > len(vocab):
             print "Error: parameter for num_freq_words > vocabulary size"
             return    
-        freq_sort = sorted(freq_dict, key=freq_dict.get, reverse=True)
+        freq_sort = sorted(single_counts, key=single_counts.get, reverse=True)
         if freq_sort[num_freq_words-1] < TOP_WORDS_CUTOFF:
-            print "Error: counts for top %s words by frequency is too low" % num_freq_words
+            print "Error: some counts for top %s words are lower than cutoff" % num_freq_words
             return
         top_freq_words = freq_sort[:num_freq_words]
         for freq_word in top_freq_words:
@@ -432,8 +476,8 @@ def calculate_clusters(docs, cdict, freq_dict, vocab, metric, use_freq_words=Fal
         for v_word in vocab:
             clusters.append([v_word])
 
-    while len(clusters) > NUM_CLUSTERS:
-        clusters = greedy_cluster(docs, cdict, clusters, metric, merges_per_iter)
+    while len(clusters) > target_num_clusters:
+        clusters = greedy_merge(docs, pdict, clusters, metric, target_num_clusters, merges_per_iter)
 
     return clusters            
 
@@ -447,7 +491,7 @@ def mean_pmi_of_word_in_cluster(pdict, target_word, cluster):
     cwords_minus_target = cluster[:]
     # Remove target word from this copy
     cwords_minus_target.remove(target_word)
-    return mean_pmi_score(pdict, target_word, cwords_minus_target)             
+    return mean_pmi_score(pdict, [target_word], cwords_minus_target)             
 
 def num_neg_pmi(pdict):
     """ Count number of negative PMIs in PMI dictionary
@@ -465,7 +509,7 @@ def num_neg_pmi(pdict):
    
 ##### PRINT METHODS #####
 
-def print_clusters(pdict, clusters, first_n_words):
+def print_clusters(pdict, single_counts, clusters, first_n_words):
     """ Print clusters, showing words in each cluster
 
         Currently, the clusters are not sorted in any particular order
@@ -503,19 +547,18 @@ def print_clusters(pdict, clusters, first_n_words):
         print "Cluster %s - " % (idx+1),
         print clusters_by_pmi[idx][:first_n_words]
 
-def print_top_pmi_pairs(pdict, num):
+def print_top_pmi_pairs(pdict, vocab, num):
     """ Print highest PMI scores over all word pairs in the vocabulary
     """
     top_scores = [] 
     # Compile list of highest PMIs
-    for i in range(vocab_size):
-        wi = vocab[i]
-        if pmi_dict.get(wi):
-            max_key = max(pmi_dict[wi], key=pmi_dict[wi].get)
+    for v_word in vocab:
+        if pdict.get(v_word):
+            max_key = max(pdict[v_word], key=pdict[v_word].get)
             # This makes sure we don't double count pairs
             # (depending on how the PMI table is constructed)
-            if wi <= max_key:
-                top_scores.append(((wi, max_key), pmi_dict[wi][max_key]))
+            if v_word <= max_key:
+                top_scores.append(((v_word, max_key), pdict[v_word][max_key]))
     # Sort such that highest scores are at beginning of list
     top_scores.sort(key=lambda(x): x[1], reverse=True)
     # Print word pairs with highest PMI
@@ -527,6 +570,9 @@ def print_top_pmi_pairs(pdict, num):
 def print_top_pmi_for_freq_words(pdict, num):   
     """ Print most frequent words (i.e. words with highest single counts)
         For each most frequent word, print words with highest PMI 
+
+        N.B. This implementation assumes that the PMI table duplicates
+             word pairs such that pdict[wi][wj] = pdict[wj][wi]
     """
     single_counts_sort = sorted(single_counts, key=single_counts.get, reverse=True)
     for i in range(num):
@@ -571,67 +617,67 @@ with open(doc_file) as f:
     lines = f.readlines()
     num_docs = len(lines)
 
-vocab_set = set()
-
 print "Computing single counts..."
 
 for line in lines:
     doc = {}
     doc['doc_id'], doc['label'], doc['text'] = line.strip().split('\t')
     doc['ctext'] = clean(doc['text'])
-    docs.append(doc)
+    documents.append(doc)
 
     words = list(set(doc['ctext'].split()))
-    vocab_set |= set(words)
+    vocabulary |= set(words)
 
     doc_len = len(words)
     for i in range(doc_len):
         wi = words[i]
-        single_counts[wi] += 1
+        doc_single_counts[wi] += 1
 
 print "Removing low frequency words from vocabulary..."
 
-vocab = list(vocab_set)
+vocabulary = {w for w in vocabulary if doc_single_counts[w] > VOCAB_CUTOFF}
 
-vocab[:] = [word for word in vocab if single_counts[word] > VOCAB_CUTOFF]
-vocab.sort()
+print "The vocabulary size is %s words" % len(vocabulary)
 
 print "Computing pair counts..."
 
-for doc in docs:
+for doc in documents:
     words = list(set(doc['ctext'].split()))
     doc_len = len(words)
     for i in range(doc_len):
         wi = words[i]
         for j in range(i+1,doc_len):
             wj = words[j]
-            if wi in vocab and wj in vocab:
+            if wi in vocabulary and wj in vocabulary:
                 pair = tuple(sorted([wi, wj]))
-                pair_counts[pair] += 1    
+                doc_pair_counts[pair] += 1    
 
 print "Calculating PMI..."
 
 # Iterate only through pairs with non-zero counts
-for pair in pair_counts:
+for pair in doc_pair_counts:
     wi = pair[0]
     wj = pair[1]
-    pmi = pmi_boolbool(num_docs, wi, wj) 
+    pmi = pmi_boolbool(doc_single_counts, doc_pair_counts, num_docs, wi, wj) 
     if pmi is not None:
-        pmi_dict[wi][wj] = pmi
+        pmi_lookup[wi][wj] = pmi
         # Duplicate PMI for reverse ordering of wi, wj for convenience
-        pmi_dict[wj][wi] = pmi
+        pmi_lookup[wj][wi] = pmi
 
+scoring_metric = sys.argv[2]
+num_clusters = int(sys.argv[3])
+
+print "Target number of clusters = %s" % num_clusters
 print "Calculating clusters..."
 
-metric = sys.argv[2]
-clusters = calculate_clusters(docs, pmi_dict, single_counts, vocab, metric, use_freq_words=False, num_freq_words=500, merges_per_iter=1)
+clusters = calculate_clusters(documents, pmi_lookup, doc_single_counts, vocabulary, scoring_metric, num_clusters, use_freq_words=False, num_freq_words=500, merges_per_iter=1)
 
-print "\nUsed %s metric, clusters found:" % metric
+print "\nUsed %s metric, clusters found:" % scoring_metric
 
-print_clusters(pmi_dict, clusters, 20)
+print_clusters(pmi_lookup, doc_single_counts, clusters, 20)
 
-#print_top_pmi_for_freq_words(pmi_dict,5)
-#print_top_pmi_pairs(pmi_dict,20)
-#print_docs_for_pair('american','out')
+#print_top_pmi_for_freq_words(pmi_dict, 5)
+#print_top_pmi_pairs(pmi_dict, vocabulary, 20)
+#print_docs_for_pair('american', 'out')
 
 #print "\nNumber of negative PMIs = %s, fraction of negative PMIs = %s" % num_neg_pmi(pmi_dict)
