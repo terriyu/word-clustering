@@ -25,6 +25,13 @@ import sys, math, re, time
 # Currently, if that is the case, the score is considered to be zero.
 # WRONG??
 
+##### TODO #####
+
+# Do pair counts by N-word windows instead of entire document
+
+# Implement greedy cluster over most frequent words
+# (heuristic method from Percy Liang's thesis)
+
 ##### GLOBAL CONSTANTS #####
 
 # Frequency cutoff for inclusion in vocabulary
@@ -157,25 +164,28 @@ def min_single_pmi_score(pdict, wlist1, wlist2):
                    min_pmi = pdict[wi][wj]
     return min_pmi
 
-def mean_pmi_score(pdict, wlist1, wlist2):
-    """ Calculate mean PMI over all word pairs in two word lists,
+def mean_ppmi_score(pdict, wlist1, wlist2):
+    """ Calculate mean positive PMI over all word pairs in two word lists,
         given pre-computed PMI dictionary
 
+        - Any negative PMI is truncated to zero
         - If there is no PMI defined for any of the word pairs,
           return -inf
     """
-    total_pmi = None
+    total_ppmi = None
     for word1 in wlist1:
         for word2 in wlist2:
             # Enforce alphabetical order in pair
             pair = tuple(sorted([word1, word2]))
             wi, wj = pair
             if wi in pdict and wj in pdict[wi]:
-                if total_pmi is None:
-                    total_pmi = 0
-                total_pmi += pdict[wi][wj]
-    if total_pmi is not None:
-        return total_pmi / (len(wlist1)*len(wlist2))
+                if total_ppmi is None:
+                    total_ppmi = 0
+                # Any negative PMIs are considered to be 0
+                if pdict[wi][wj] > 0:
+                    total_ppmi += pdict[wi][wj]
+    if total_ppmi is not None:
+        return total_ppmi / (len(wlist1)*len(wlist2))
     else:
         return float("-inf")
 
@@ -287,7 +297,7 @@ def score_clusters(pdict, docs, metric, c1, c2):
     elif metric == 'min':
         score = min_single_pmi_score(pdict, c1, c2)
     elif metric == 'mean':
-        score = mean_pmi_score(pdict, c1, c2)
+        score = mean_ppmi_score(pdict, c1, c2)
     elif metric == 'geometric':
         score = geometric_pmi_score(pdict, c1, c2)
     elif metric == 'harmonic':
@@ -346,7 +356,7 @@ def greedy_merge(docs, pdict, clusters, metric, target_num_clusters, merges_per_
                 print "break"
                 break
 
-            (cm1, cm2), merge_score = candidates[0] 
+            (cm1, cm2), merge_score = candidates[0]
 
             print "[iteration = %s] Merging clusters (%s, %s) with score %s " % (iteration, cm1, cm2, merge_score)
             if verbose: print clusters[cm1], clusters[cm2]
@@ -450,7 +460,7 @@ def calculate_clusters(docs, pdict, single_counts, vocab, metric, target_num_clu
 
 ##### UTILITY METHODS ######
 
-def mean_pmi_of_word_in_cluster(pdict, target_word, cluster):
+def mean_ppmi_of_word_in_cluster(pdict, target_word, cluster):
     """ Given a target word and its cluster, compute mean PMI for all pairs
         containing the target word and another word in the cluster
     """
@@ -458,7 +468,7 @@ def mean_pmi_of_word_in_cluster(pdict, target_word, cluster):
     cwords_minus_target = cluster[:]
     # Remove target word from this copy
     cwords_minus_target.remove(target_word)
-    return mean_pmi_score(pdict, [target_word], cwords_minus_target)
+    return mean_ppmi_score(pdict, [target_word], cwords_minus_target)
 
 def num_neg_pmi(pdict):
     """ Count number of negative PMIs in PMI dictionary
@@ -500,7 +510,7 @@ def print_clusters(pdict, single_counts, clusters, first_n_words):
     print "Words sorted by mean PMI"
     for idx, c in enumerate(clusters):
         # Sort words in cluster by mean PMI
-        clusters_by_pmi.append(sorted(c, key=lambda w: mean_pmi_of_word_in_cluster(pdict, w, c), reverse=True))
+        clusters_by_pmi.append(sorted(c, key=lambda w: mean_ppmi_of_word_in_cluster(pdict, w, c), reverse=True))
         print "Cluster %s - " % (idx+1),
         print clusters_by_pmi[idx]
 
