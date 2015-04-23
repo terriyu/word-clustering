@@ -1,6 +1,7 @@
 from __future__ import division
 from collections import defaultdict
-import sys, math, re, time
+import sys, re, time
+import numpy as np
 
 ##### COMMAND LINE ARGUMENTS #####
 # Usage: python calculate_pmi.py
@@ -11,6 +12,7 @@ import sys, math, re, time
 #               ('max', 'min', 'mean', 'geometric', 'harmonic', 'disjunction')
 # sys.argv[3] - target number of clusters
 # sys.argv[4] - number of greedy merges to perform per iteration
+# sys.argv[5] - Mallet word topics count file for evaluation of clusters (optional argument)
 
 ##### ISSUES #####
 # Implement command line arguments with argparse?
@@ -50,7 +52,10 @@ TOP_WORDS_CUTOFF = 10
 STOP_WORD_FILE = 'stop_lists/mallet_stop.txt'
 
 # Punctuation to remove from documents
-PUNCT_REMOVE = set([r'\.', r'\?', r'\(', r'\)', '\"', '\'', ',', '!', ':'])
+PUNCT_REMOVE = set([r'\.', r'\?', r'\(', r'\)', '\"', '\'', r',', r'!', r':', r';', r'\$'])
+
+# Miscellaneous words to remove from documents
+MISC_REMOVE = set(['th'])
 
 # Scoring metrics available
 VALID_METRICS = set(['min', 'max', 'mean', 'geometric', 'harmonic', 'disjunction'])
@@ -95,10 +100,18 @@ def clean(text):
     # Remove punctuation
     for symbol in PUNCT_REMOVE:
         text = re.sub(symbol, '', text)
+    # Replace underscore with space
+    text = re.sub(r'_', ' ', text)
     # Remove capitalization
     text = text.lower()
     # Remove stop words
     for word in stop_words:
+        pattern = r'\b' + word + r'\b'
+        text = re.sub(pattern, '', text)
+    # Remove numbers
+    text = re.sub('[0-9]*', '', text)
+    # Remove miscellaneous words
+    for word in MISC_REMOVE:
         pattern = r'\b' + word + r'\b'
         text = re.sub(pattern, '', text)
     # Remove extra spaces
@@ -122,7 +135,7 @@ def pmi_boolbool(single_counts, pair_counts, N_docs, wi, wj):
     # The single and pair counts must be non-zero
     # otherwise, the PMI is undefined
     if (Nij != 0) and (Ni != 0) and (Nj != 0):
-        return math.log(N_docs*Nij/(Ni*Nj), 2)
+        return np.log2(N_docs*Nij/(Ni*Nj))
     else:
         return None
 
@@ -278,7 +291,7 @@ def disjunction_pmi_score(docs, wset1, wset2):
     if (count_and != 0) and (count_or1 != 0) and (count_or2 != 0):
         # Check if counts for wset1 and wset2 are above cutoff
         if (count_or1 > VOCAB_CUTOFF) and (count_or2 > VOCAB_CUTOFF):
-            disj_pmi = math.log(num_docs*count_and/(count_or1*count_or2), 2)
+            disj_pmi = np.log2(num_docs*count_and/(count_or1*count_or2))
         else:
             disj_pmi = float("-inf")
     else:
@@ -576,6 +589,68 @@ def print_docs_for_pair(wi, wj):
             count += 1
     print "Total number of matched docs: %s" % count
 
+##### EVALUATION METHODS #####
+
+def create_mallet_clusters(filename, num_clusters, vocab):
+    """ Create clusters corresponding to MALLET word topic counts file,
+        given the number of clusters, also return the list of words in the MALLET clusters
+
+        Only include a word in the MALLET clusters if it is in our PMI vocabulary
+    """
+    # Words that appear in the MALLET clusters
+    cluster_words = []
+    # Clusters corresponding to MALLET word topic counts
+    clusters = [None] * num_clusters
+
+    with open(filename) as f:
+        lines = f.readlines()
+
+    for line in lines:
+        tokens = line.strip().split()
+        # Extract word and highest count from MALLET file
+        # Highest count has form i:j where i is the cluster id
+        # and j is the number of counts
+        word, highest_count  = tokens[1:3]
+        if word in vocab:
+            cluster_words.append(word)
+            cluster_idx, count = [int(s) for s in highest_count.split(':')]
+            if clusters[cluster_idx] is None:
+                clusters[cluster_idx] = [word]
+            else:
+                clusters[cluster_idx].append(word)
+
+    return clusters, cluster_words
+
+def calculate_VI(clusters1, clusters2):
+    """ Calculate variation of information between two sets of clusters
+    """
+    # Total number of elements in clusters
+    n1 = sum([len(c) for c in clusters1])
+    n2 = sum([len(c) for c in clusters2])
+
+    if n1 != n2:
+        print "Error: Number of elements in clusters do not match"
+        return
+
+    n = n1
+    vi = 0.0
+    for i in range(len(clusters1)):
+        for j in range(len(clusters2)):
+            # Compute probabilities for single clusters
+            p_i = len(clusters1[i])/n
+            q_j = len(clusters2[j])/n
+            # Check if clusters i and j have an intersection
+            set_i = set(clusters1[i])
+            set_j = set(clusters2[j])
+            intersection_ij =  set_i.intersection(set_j)
+            if intersection_ij:
+                # If intersection exists, r_ij is nonzero and
+                # the contribution to VI is nonzero
+                r_ij = len(intersection_ij)/n
+                vi -= r_ij * (np.log2(r_ij/p_i) + np.log2(r_ij/q_j))
+
+    return vi
+
 ##### MAIN SCRIPT ######
 
 print "Reading in stop word list from %s" % STOP_WORD_FILE
@@ -648,14 +723,20 @@ print "Target number of clusters = %s" % num_clusters
 print "Calculating clusters..."
 
 ti = time.time()
-clusters = calculate_clusters(documents, pmi_lookup, doc_single_counts, vocabulary, scoring_metric, num_clusters, use_freq_words=False, num_freq_words=500, merges_per_iter=num_merges, verbose=False)
+my_clusters = calculate_clusters(documents, pmi_lookup, doc_single_counts, vocabulary, scoring_metric, num_clusters, use_freq_words=False, num_freq_words=500, merges_per_iter=num_merges, verbose=False)
 tf = time.time()
 
 print "\nUsed %s metric, clusters found:" % scoring_metric
 
-print_clusters(pmi_lookup, doc_single_counts, clusters, 20)
+print_clusters(pmi_lookup, doc_single_counts, my_clusters, 20)
 
 print "Clustering took %s seconds" % (tf-ti)
+
+if len(sys.argv) > 5:
+    mallet_file = sys.argv[5]
+    mallet_clusters, mallet_words = create_mallet_clusters(mallet_file, num_clusters, vocabulary)
+    vi = calculate_VI(my_clusters, mallet_clusters)
+    print "Variation of information distance between our clusters and MALLET = %s" % vi
 
 #print_top_pmi_for_freq_words(pmi_dict, 5)
 #print_top_pmi_pairs(pmi_dict, vocabulary, 20)
