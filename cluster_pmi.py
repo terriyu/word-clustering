@@ -95,14 +95,20 @@ pmi_lookup = defaultdict(dict)
 
 ##### PARSER #####
 
-parser = argparse.ArgumentParser(description='Cluster documents using PMI-like metrics.')
+parser = argparse.ArgumentParser(description='Cluster documents using PMI-like metrics.', add_help=False)
+required_args = parser.add_argument_group('Required arguments')
+optional_args = parser.add_argument_group('Optional arguments')
+help_arg = parser.add_argument_group('Help')
 
-parser.add_argument('--doc', required=True, help='File containing documents, same format as used by jsLDA')
-parser.add_argument('--metric', required=True, choices=['max', 'min', 'mean', 'geometric', 'harmonic', 'disjunction'], help='Metric to use for clustering')
-parser.add_argument('--n_clusters', required=False, default=10, type=int, help='Target number of clusters (default=10)')
-parser.add_argument('--merges_per_iter', required=False, default=3, type=int, help='Number of greedy merges to perform per iteration (default=3)')
-parser.add_argument('--n_top_words', required=False, default=20, help='Number of top words in each cluster to display (default=20)')
-parser.add_argument('--mallet_file', required=False, help='MALLET word topics count file to use for evaluation of clusters')
+required_args.add_argument('--doc', required=True, help='File containing documents, same format as used by jsLDA')
+required_args.add_argument('--metric', required=True, choices=['max', 'min', 'mean', 'geometric', 'harmonic', 'disjunction'], help='Metric to use for clustering')
+
+optional_args.add_argument('--n_clusters', required=False, default=10, type=int, help='Target number of clusters (default=10)')
+optional_args.add_argument('--merges_per_iter', required=False, default=3, type=int, help='Number of greedy merges to perform per iteration (default=3)')
+optional_args.add_argument('--n_top_words', required=False, default=20, help='Number of top words in each cluster to display (default=20)')
+optional_args.add_argument('--mallet_file', required=False, help='MALLET word topics count file to use for evaluation of clusters')
+
+help_arg.add_argument('-h', '--help', action='help')
 
 ##### DATA PROCESSING METHODS #####
 
