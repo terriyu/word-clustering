@@ -1,18 +1,20 @@
 from __future__ import division
 from collections import defaultdict
-import sys, re, time
+import argparse, re, sys, time
 import numpy as np
 
 ##### COMMAND LINE ARGUMENTS #####
-# Usage: python calculate_pmi.py
+# Usage: python calculate_pmi.py --doc doc_file --metric metric --n_clusters nc --merges_per_iter m --n_top_words ntw --mallet_file mallet_file
 #
-# sys.argv[0] - 'calculate_pmi.py' (the script)
-# sys.argv[1] - file containing documents
-# sys.argv[2] - metric to use for clustering
+# Arguments
+#
+# --doc - file containing documents
+# --metric - metric to use for clustering
 #               ('max', 'min', 'mean', 'geometric', 'harmonic', 'disjunction')
-# sys.argv[3] - target number of clusters
-# sys.argv[4] - number of greedy merges to perform per iteration
-# sys.argv[5] - Mallet word topics count file for evaluation of clusters (optional argument)
+# --n_clusters - target number of clusters (optional, default=10)
+# --merges_per_iter - number of greedy merges to perform per iteration (optional, default=3)
+# --n_top_words - number of top words in each cluster to display (optional, default=20)
+# --mallet_file - Mallet word topics count file for evaluation of clusters (optional)
 
 ##### ISSUES #####
 # Implement command line arguments with argparse?
@@ -90,6 +92,17 @@ doc_pair_counts = defaultdict(int)
 # Key is a word in the vocabulary, value is a dictionary of word-PMI key-value pairs
 # e.g. pmi_dict['food']['prices'] = 1.5
 pmi_lookup = defaultdict(dict)
+
+##### PARSER #####
+
+parser = argparse.ArgumentParser(description='Cluster documents using PMI-like metrics.')
+
+parser.add_argument('--doc', required=True, help='File containing documents, same format as used by jsLDA')
+parser.add_argument('--metric', required=True, choices=['max', 'min', 'mean', 'geometric', 'harmonic', 'disjunction'], help='Metric to use for clustering')
+parser.add_argument('--n_clusters', required=False, default=10, type=int, help='Target number of clusters (default=10)')
+parser.add_argument('--merges_per_iter', required=False, default=3, type=int, help='Number of greedy merges to perform per iteration (default=3)')
+parser.add_argument('--n_top_words', required=False, default=20, help='Number of top words in each cluster to display (default=20)')
+parser.add_argument('--mallet_file', required=False, help='MALLET word topics count file to use for evaluation of clusters')
 
 ##### DATA PROCESSING METHODS #####
 
@@ -653,6 +666,8 @@ def calculate_VI(clusters1, clusters2):
 
 ##### MAIN SCRIPT ######
 
+args = parser.parse_args()
+
 print "Reading in stop word list from %s" % STOP_WORD_FILE
 
 with open(STOP_WORD_FILE) as f:
@@ -661,11 +676,9 @@ with open(STOP_WORD_FILE) as f:
 for line in lines:
     stop_words.add(line.strip())
 
-doc_file = sys.argv[1]
+print "Processing documents from %s..." % args.doc
 
-print "Processing documents from %s..." % doc_file
-
-with open(doc_file) as f:
+with open(args.doc) as f:
     lines = f.readlines()
     num_docs = len(lines)
 
@@ -715,26 +728,21 @@ for pair in doc_pair_counts:
         # Duplicate PMI for reverse ordering of wi, wj for convenience
         pmi_lookup[wj][wi] = pmi
 
-scoring_metric = sys.argv[2]
-num_clusters = int(sys.argv[3])
-num_merges = int(sys.argv[4])
-
-print "Target number of clusters = %s" % num_clusters
+print "Target number of clusters = %s, using %s merges per iteration" % (args.n_clusters, args.merges_per_iter)
 print "Calculating clusters..."
 
 ti = time.time()
-my_clusters = calculate_clusters(documents, pmi_lookup, doc_single_counts, vocabulary, scoring_metric, num_clusters, use_freq_words=False, num_freq_words=500, merges_per_iter=num_merges, verbose=False)
+my_clusters = calculate_clusters(documents, pmi_lookup, doc_single_counts, vocabulary, args.metric, args.n_clusters, use_freq_words=False, num_freq_words=500, merges_per_iter=args.merges_per_iter, verbose=False)
 tf = time.time()
 
-print "\nUsed %s metric, clusters found:" % scoring_metric
+print "\nUsed %s metric, clusters found:" % args.metric
 
-print_clusters(pmi_lookup, doc_single_counts, my_clusters, 20)
+print_clusters(pmi_lookup, doc_single_counts, my_clusters, args.n_top_words)
 
 print "Clustering took %s seconds" % (tf-ti)
 
-if len(sys.argv) > 5:
-    mallet_file = sys.argv[5]
-    mallet_clusters, mallet_words = create_mallet_clusters(mallet_file, num_clusters, vocabulary)
+if args.mallet_file:
+    mallet_clusters, mallet_words = create_mallet_clusters(args.mallet_file, args.n_clusters, vocabulary)
     vi = calculate_VI(my_clusters, mallet_clusters)
     print "Variation of information distance between our clusters and MALLET = %s" % vi
 
