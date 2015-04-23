@@ -17,17 +17,16 @@ import numpy as np
 # --mallet_file - Mallet word topics count file for evaluation of clusters (optional)
 
 ##### ISSUES #####
-# Implement command line arguments with argparse?
 
 # Currently, word pairs are duplicated in construction of PMI table
 # i.e. pmi_dict[wi][wj] = pmi_dict[wj][wi]
-# Should we keep it this way?
+# ==> Should we keep it this way?
 
 # For any metric that involves averaging over word pairs,
 # there is the possibility that a word pair has no entry
 # in the PMI lookup table.
 # Currently, if that is the case, the score is considered to be zero.
-# WRONG??
+# ==> Possible solution: truncate all negative PMIs to zero 
 
 ##### TODO #####
 
