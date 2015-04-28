@@ -4,17 +4,18 @@ import argparse, re, sys, time
 import numpy as np
 
 ##### COMMAND LINE ARGUMENTS #####
-# Usage: python calculate_pmi.py --doc doc_file --metric metric --n_clusters nc --merges_per_iter m --n_top_words ntw --mallet_file mallet_file
+# Example usage: python calculate_pmi.py --doc docs.txt --metric 'mean' --window 5 --n_clusters 5 --merges_per_iter 10 --n_top_words 10 --mallet_file word_topic_counts.txt 
 #
 # Arguments
 #
 # --doc - file containing documents
 # --metric - metric to use for clustering
 #               ('max', 'min', 'mean', 'geometric', 'harmonic', 'disjunction')
+# --window - use window of +/- words around target word when computing pair counts
 # --n_clusters - target number of clusters (optional, default=10)
 # --merges_per_iter - number of greedy merges to perform per iteration (optional, default=3)
 # --n_top_words - number of top words in each cluster to display (optional, default=20)
-# --mallet_file - Mallet word topics count file for evaluation of clusters (optional)
+# --mallet_file - MALLET word topics count file for evaluation of clusters (optional)
 
 ##### ISSUES #####
 
@@ -31,9 +32,16 @@ import numpy as np
 ##### TODO #####
 
 # Do pair counts by N-word windows instead of entire document
+# (in progress)
 
 # Implement greedy cluster over most frequent words
 # (heuristic method from Percy Liang's thesis)
+
+# Try approximations for disjunction
+
+# Add option to save PMI table and clusters
+
+# Remove data cleaning from this module
 
 ##### GLOBAL CONSTANTS #####
 
@@ -94,14 +102,17 @@ pmi_lookup = defaultdict(dict)
 
 ##### PARSER #####
 
-parser = argparse.ArgumentParser(description='Cluster documents using PMI-like metrics.', add_help=False)
+parser = argparse.ArgumentParser(description='Cluster documents using PMI-based metrics.', add_help=False)
+
 required_args = parser.add_argument_group('Required arguments')
 optional_args = parser.add_argument_group('Optional arguments')
 help_arg = parser.add_argument_group('Help')
 
 required_args.add_argument('--doc', required=True, help='File containing documents, same format as used by jsLDA')
-required_args.add_argument('--metric', required=True, choices=['max', 'min', 'mean', 'geometric', 'harmonic', 'disjunction'], help='Metric to use for clustering')
+required_args.add_argument('--metric', required=True, choices=VALID_METRICS, help='Metric to use for clustering')
 
+optional_args.add_argument('--norm', required=False, action='store_true', help='Calculate normalized PMI instead of conventional PMI')
+optional_args.add_argument('--window', required=False, default=None, type=int, help='Window size of +/- argument words for pair counts (default=entire document)')
 optional_args.add_argument('--n_clusters', required=False, default=10, type=int, help='Target number of clusters (default=10)')
 optional_args.add_argument('--merges_per_iter', required=False, default=3, type=int, help='Number of greedy merges to perform per iteration (default=3)')
 optional_args.add_argument('--n_top_words', required=False, default=20, help='Number of top words in each cluster to display (default=20)')
@@ -137,13 +148,14 @@ def clean(text):
 
 ##### SCORING METHODS ######
 
-def pmi_boolbool(single_counts, pair_counts, N_docs, wi, wj):
+def pmi_boolbool(single_counts, pair_counts, N_docs, wi, wj, normalized=False):
     """ Calculate PMI of two words wi, wj and normalizes by number of documents
 
         - Uses logarithm base 2
         - Only checks if a word occurs or not,
           doesn't account for multiple word occurences in a document
         - If any of the counts are zero, PMI is undefined and None is returned
+        - If normalized=True, calculate normalized PMI
     """
     # Enforce alphabetical order in pair
     pair = tuple(sorted([wi, wj]))
@@ -153,7 +165,10 @@ def pmi_boolbool(single_counts, pair_counts, N_docs, wi, wj):
     # The single and pair counts must be non-zero
     # otherwise, the PMI is undefined
     if (Nij != 0) and (Ni != 0) and (Nj != 0):
-        return np.log2(N_docs*Nij/(Ni*Nj))
+        pmi = np.log2(N_docs*Nij / (Ni*Nj))
+        if normalized:
+            pmi = pmi / (- np.log2(Nij / N_docs))
+        return pmi
     else:
         return None
 
@@ -620,7 +635,7 @@ def create_mallet_clusters(filename, num_clusters, vocab):
     # Clusters corresponding to MALLET word topic counts
     clusters = [None] * num_clusters
 
-    with open(filename) as f:
+    with open(filename, 'r') as f:
         lines = f.readlines()
 
     for line in lines:
@@ -675,7 +690,7 @@ args = parser.parse_args()
 
 print "Reading in stop word list from %s" % STOP_WORD_FILE
 
-with open(STOP_WORD_FILE) as f:
+with open(STOP_WORD_FILE, 'r') as f:
     lines = f.readlines()
 
 for line in lines:
@@ -683,7 +698,7 @@ for line in lines:
 
 print "Processing documents from %s..." % args.doc
 
-with open(args.doc) as f:
+with open(args.doc, 'r') as f:
     lines = f.readlines()
     num_docs = len(lines)
 
@@ -709,25 +724,46 @@ vocabulary = {w for w in vocabulary if doc_single_counts[w] > VOCAB_CUTOFF}
 
 print "The vocabulary size is %s words" % len(vocabulary)
 
-print "Computing pair counts..."
+if args.window:
+    print "Computing pair counts with window size = %d" % args.window
+else:
+    print "Computing pair counts for documents..."
 
-for doc in documents:
-    words = list(set(doc['ctext'].split()))
-    doc_len = len(words)
-    for i in range(doc_len):
-        wi = words[i]
-        for j in range(i+1,doc_len):
-            wj = words[j]
-            if wi in vocabulary and wj in vocabulary:
-                pair = tuple(sorted([wi, wj]))
-                doc_pair_counts[pair] += 1
+if args.window:
+    for doc in documents:
+        words = list(set(doc['ctext'].split()))
+        doc_len = len(words)
+        for i in range(doc_len):
+            wi = words[i]
+            w_min = max(i - args.window, 0)
+            w_max = min(i + args.window, doc_len)
+            for j in range(w_min, w_max):
+                if j != i:
+                    wj = words[j]
+                    if wi in vocabulary and wj in vocabulary:
+                        pair = tuple(sorted([wi, wj]))
+                        doc_pair_counts[pair] += 1
+else:
+    for doc in documents:
+        words = list(set(doc['ctext'].split()))
+        doc_len = len(words)
+        for i in range(doc_len):
+            wi = words[i]
+            for j in range(i+1,doc_len):
+                wj = words[j]
+                if wi in vocabulary and wj in vocabulary:
+                    pair = tuple(sorted([wi, wj]))
+                    doc_pair_counts[pair] += 1
 
-print "Calculating PMI..."
+if args.norm:
+    print "Calculating normalized PMI..."
+else:
+    print "Calculating PMI..."
 
 # Iterate only through pairs with non-zero counts
 for pair in doc_pair_counts:
     wi, wj = pair
-    pmi = pmi_boolbool(doc_single_counts, doc_pair_counts, num_docs, wi, wj)
+    pmi = pmi_boolbool(doc_single_counts, doc_pair_counts, num_docs, wi, wj, normalized=args.norm)
     if pmi is not None:
         pmi_lookup[wi][wj] = pmi
         # Duplicate PMI for reverse ordering of wi, wj for convenience
