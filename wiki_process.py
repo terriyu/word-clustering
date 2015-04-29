@@ -26,7 +26,9 @@ parser = argparse.ArgumentParser(description='Perform co-occurence counts on Wik
 
 ex_group = parser.add_argument_group(title='Mutually exclusive arguments (one is required)')
 ex_args = ex_group.add_mutually_exclusive_group(required=True)
+
 required_args = parser.add_argument_group('Required arguments')
+
 optional_args = parser.add_argument_group('Optional arguments')
 
 help_arg = parser.add_argument_group('Help')
