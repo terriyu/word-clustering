@@ -30,7 +30,7 @@ required_args.add_argument('--input', required=True, help='Input JSON file conta
 required_args.add_argument('--output', required=True, help='Output JSON file containing clusters')
 
 optional_args.add_argument('--n_clusters', required=False, default=10, type=int, help='Target number of clusters (default=10)')
-optional_args.add_argument('--merges_per_iter', required=False, default=3, type=int, help='Number of greedy merges to perform per iteration (default=3)')
+optional_args.add_argument('--merges_per_iter', required=False, default=10, type=int, help='Number of greedy merges to perform per iteration (default=10)')
 optional_args.add_argument('--n_top_words', required=False, default=20, help='Number of top words in each cluster to display (default=20)')
 optional_args.add_argument('--mallet_file', required=False, help='MALLET word topics count file to use for evaluation of clusters')
 
