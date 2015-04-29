@@ -26,11 +26,9 @@ help_arg.add_argument('-h', '--help', action='help')
 
 args = parser.parse_args()
 
-print args
-
 ##### MAIN SCRIPT #####
 
 with open(args.input, 'r') as input_file:
     docs = json.load(input_file)
 
-vocab, single_counts, pair_counts, scores = process_util.counts_and_score_table(docs, window=args.window, norm_pmi=args.norm, json_file=args.output, docs_label=args.input, verbose=True)
+vocab, single_counts, pair_counts, scores = process_util.counts_and_score_table(docs, window=args.window, norm_pmi=args.norm, json_file=args.output, docs_label=args.input, verbose=args.verbose)

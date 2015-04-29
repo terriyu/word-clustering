@@ -177,7 +177,7 @@ def counts_and_score_table(docs, window=None, norm_pmi=False, json_file=False, d
         # Need to flatten tuple keys, so that pair counts dictionary is serializable
         doc_pair_counts_flat_keys = {}
         for key, value in doc_pair_counts.iteritems():
-            doc_pair_counts_flat_keys[', '.join(key)] = value
+            doc_pair_counts_flat_keys[','.join(key)] = value
         # Convert vocabulary set to list, so that it is serializable
         results_dict = {'docs_label': docs_label, 'norm_pmi': norm_pmi, 'window': window, 'vocab': list(vocabulary), 'single_counts': doc_single_counts, 'pair_counts': doc_pair_counts_flat_keys, 'score_table': pmi_lookup}
         # Write dictionary to JSON file

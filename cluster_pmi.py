@@ -1,78 +1,22 @@
 from __future__ import division
 from collections import defaultdict
-import argparse, re, sys, time
 import numpy as np
+import argparse, json, re, sys, time
 
-##### COMMAND LINE ARGUMENTS #####
-# Example usage: python calculate_pmi.py --doc docs.txt --metric 'mean' --window 5 --n_clusters 5 --merges_per_iter 10 --n_top_words 10 --mallet_file word_topic_counts.txt 
-#
-# Arguments
-#
-# --doc - file containing documents
-# --metric - metric to use for clustering
-#               ('max', 'min', 'mean', 'geometric', 'harmonic', 'disjunction')
-# --window - use window of +/- words around target word when computing pair counts
-# --n_clusters - target number of clusters (optional, default=10)
-# --merges_per_iter - number of greedy merges to perform per iteration (optional, default=3)
-# --n_top_words - number of top words in each cluster to display (optional, default=20)
-# --mallet_file - MALLET word topics count file for evaluation of clusters (optional)
+# Example usage:
+# python calculate_pmi.py --doc docs.txt --metric 'mean' -n_clusters 5 --merges_per_iter 10 --n_top_words 10 --mallet_file word_topic_counts.txt 
 
 ##### GLOBAL CONSTANTS #####
-
-# Frequency cutoff for inclusion in vocabulary
-# Single count frequency must be larger than this number
-# to be included in the vocabulary
-VOCAB_CUTOFF = 5
 
 # Frequency cutoff for inclusion in top words
 # Single count frequency must be larger than this number
 # to be included in the list of top words
 TOP_WORDS_CUTOFF = 10
 
-# File to use for stop words
-# Format is one word per line
-# May want to change this to command line argument later
-STOP_WORD_FILE = 'stop_lists/mallet_stop.txt'
-
-# Punctuation to remove from documents
-PUNCT_REMOVE = set([r'\.', r'\?', r'\(', r'\)', '\"', '\'', r',', r'!', r':', r';', r'\$'])
-
-# Miscellaneous words to remove from documents
-MISC_REMOVE = set(['th'])
-
 # Scoring metrics available
-VALID_METRICS = set(['min', 'max', 'mean', 'geometric', 'harmonic', 'disjunction'])
-
-##### GLOBAL VARIABLES #####
-
-# Stop word list - each element is a string
-stop_words = set()
-
-# Set of words in vocabulary
-vocabulary = set()
-
-# List containing data about documents
-# Each element of list is a dictionary containing info for a single document
-# e.g. doc = docs[0]
-# doc['doc_id'] = '1946_1'
-# doc['label'] = 'English'
-# doc['text'] = 'To the Congress of the United States:' (original text)
-# doc['ctext'] = 'congress united states' (cleaned text)
-documents = []
-
-# Document-level counts for single words
-# Keys are words, values are integer counts
-doc_single_counts = defaultdict(int)
-
-# Document-level counts for pairs of words
-# Keys are tuples (word1, word2), values are integer counts
-# The tuples are sorted in alphabetical order such that word1 < word2
-doc_pair_counts = defaultdict(int)
-
-# Dictionary containing pre-computed PMI for all word pairs in vocabulary
-# Key is a word in the vocabulary, value is a dictionary of word-PMI key-value pairs
-# e.g. pmi_dict['food']['prices'] = 1.5
-pmi_lookup = defaultdict(dict)
+# Note: temporarily take disjunction out of valid metrics,
+#       will work on disjunction more later
+VALID_METRICS = set(['min', 'max', 'mean', 'geometric', 'harmonic'])
 
 ##### PARSER #####
 
@@ -82,11 +26,10 @@ required_args = parser.add_argument_group('Required arguments')
 optional_args = parser.add_argument_group('Optional arguments')
 help_arg = parser.add_argument_group('Help')
 
-required_args.add_argument('--doc', required=True, help='File containing documents, same format as used by jsLDA')
-required_args.add_argument('--metric', required=True, choices=VALID_METRICS, help='Metric to use for clustering')
+required_args.add_argument('--metric', required=True, choices=VALID_METRICS, help='Metric to use for clustering linkage')
+required_args.add_argument('--input', required=True, help='Input JSON file containing pre-computed data, including co-occurence counts and score table')
+required_args.add_argument('--output', required=True, help='Output JSON file containing clusters')
 
-optional_args.add_argument('--norm', required=False, action='store_true', help='Calculate normalized PMI instead of conventional PMI')
-optional_args.add_argument('--window', required=False, default=None, type=int, help='Window size of +/- argument words for pair counts (default=entire document)')
 optional_args.add_argument('--n_clusters', required=False, default=10, type=int, help='Target number of clusters (default=10)')
 optional_args.add_argument('--merges_per_iter', required=False, default=3, type=int, help='Number of greedy merges to perform per iteration (default=3)')
 optional_args.add_argument('--n_top_words', required=False, default=20, help='Number of top words in each cluster to display (default=20)')
@@ -94,57 +37,9 @@ optional_args.add_argument('--mallet_file', required=False, help='MALLET word to
 
 help_arg.add_argument('-h', '--help', action='help')
 
-##### DATA PROCESSING METHODS #####
+args = parser.parse_args()
 
-def clean(text):
-    """ Clean text: remove punctuation, capitalization,
-        stop words, extra spaces
-    """
-    # Remove punctuation
-    for symbol in PUNCT_REMOVE:
-        text = re.sub(symbol, '', text)
-    # Replace underscore with space
-    text = re.sub(r'_', ' ', text)
-    # Remove capitalization
-    text = text.lower()
-    # Remove stop words
-    for word in stop_words:
-        pattern = r'\b' + word + r'\b'
-        text = re.sub(pattern, '', text)
-    # Remove numbers
-    text = re.sub('[0-9]*', '', text)
-    # Remove miscellaneous words
-    for word in MISC_REMOVE:
-        pattern = r'\b' + word + r'\b'
-        text = re.sub(pattern, '', text)
-    # Remove extra spaces
-    return ' '.join(text.split())
-
-##### SCORING METHODS ######
-
-def pmi_boolbool(single_counts, pair_counts, N_docs, wi, wj, normalized=False):
-    """ Calculate PMI of two words wi, wj and normalizes by number of documents
-
-        - Uses logarithm base 2
-        - Only checks if a word occurs or not,
-          doesn't account for multiple word occurences in a document
-        - If any of the counts are zero, PMI is undefined and None is returned
-        - If normalized=True, calculate normalized PMI
-    """
-    # Enforce alphabetical order in pair
-    pair = tuple(sorted([wi, wj]))
-    Nij = pair_counts.get(pair,0)
-    Ni = single_counts.get(wi,0)
-    Nj = single_counts.get(wj,0)
-    # The single and pair counts must be non-zero
-    # otherwise, the PMI is undefined
-    if (Nij != 0) and (Ni != 0) and (Nj != 0):
-        pmi = np.log2(N_docs*Nij / (Ni*Nj))
-        if normalized:
-            pmi = pmi / (- np.log2(Nij / N_docs))
-        return pmi
-    else:
-        return None
+##### LINKAGE METHODS ######
 
 def max_single_pmi_score(pdict, wlist1, wlist2):
     """ Calculate maximum PMI among all word pairs
@@ -309,7 +204,7 @@ def disjunction_pmi_score(docs, wset1, wset2):
 
 ###### CLUSTERING METHODS ######
 
-def score_clusters(pdict, docs, metric, c1, c2):
+def score_clusters(pdict, metric, c1, c2):
     """ Calculate score with respect to clusters c1 and c2 using specified metric
     """
     if metric == 'max':
@@ -322,15 +217,13 @@ def score_clusters(pdict, docs, metric, c1, c2):
         score = geometric_pmi_score(pdict, c1, c2)
     elif metric == 'harmonic':
         score = harmonic_epmi_score(pdict, c1, c2)
-    elif metric == 'disjunction':
-        score = disjunction_pmi_score(docs, set(c1), set(c2))
     else:
         print 'No known coherence metric specified'
         return
 
     return score
 
-def generate_score_table(pdict, docs, clusters, metric):
+def generate_score_table(pdict, clusters, metric):
     """ Generate score table for all pairwise combinations in clusters,
         according to metric
 
@@ -342,20 +235,20 @@ def generate_score_table(pdict, docs, clusters, metric):
     # Calculate initial score table
     for i in range(cluster_size):
         for j in range(i+1,cluster_size):
-            score = score_clusters(pdict, docs, metric, clusters[i], clusters[j])
+            score = score_clusters(pdict, metric, clusters[i], clusters[j])
             # Note the cluster indices must be in a list (e.g. [i,j])
             # so that they are mutable
             candidates.append([[i, j], score])
 
     return candidates
 
-def greedy_merge(docs, pdict, clusters, metric, target_num_clusters, merges_per_iter, cache, verbose):
+def greedy_merge(pdict, clusters, metric, target_num_clusters, merges_per_iter, cache, verbose):
     """ Performs greedy merging of clusters iteratively until target number of clusters is reached
 
         Does specified number of merges per iteration and uses caching if flag is set to True
     """
     # Generate initial score table
-    candidates = generate_score_table(pdict, docs, clusters, metric)
+    candidates = generate_score_table(pdict, clusters, metric)
 
     # Sort score table
     if metric != 'min':
@@ -424,12 +317,12 @@ def greedy_merge(docs, pdict, clusters, metric, target_num_clusters, merges_per_
                 for j in range(i):
                     # Note the cluster indices must be in a list (e.g. [i,j])
                     # so that they are mutable
-                    score = score_clusters(pdict, docs, metric, clusters[j], clusters[i])
+                    score = score_clusters(pdict, metric, clusters[j], clusters[i])
                     if verbose: print "Adding (%s, %s)" % (j, i)
                     candidates.append([[j, i], score])
         else:
             # No caching, re-generate entire score table
-            candidates = generate_score_table(pdict, docs, clusters, metric)
+            candidates = generate_score_table(pdict, clusters, metric)
 
         # Sort score table
         if metric != 'min':
@@ -441,7 +334,7 @@ def greedy_merge(docs, pdict, clusters, metric, target_num_clusters, merges_per_
 
     return clusters
 
-def calculate_clusters(docs, pdict, single_counts, vocab, metric, target_num_clusters, use_freq_words=False, num_freq_words=100, merges_per_iter=1, cache=True, verbose=False):
+def calculate_clusters(pdict, single_counts, vocab, metric, target_num_clusters, use_freq_words=False, num_freq_words=100, merges_per_iter=1, cache=True, verbose=False):
     """ Calculate target number of clusters using specified metric and greedy approaches
 
         Options:
@@ -474,7 +367,7 @@ def calculate_clusters(docs, pdict, single_counts, vocab, metric, target_num_clu
     else:
         for v_word in vocab:
             clusters.append([v_word])
-        clusters = greedy_merge(docs, pdict, clusters, metric, target_num_clusters, merges_per_iter, cache, verbose)
+        clusters = greedy_merge(pdict, clusters, metric, target_num_clusters, merges_per_iter, cache, verbose)
 
     return clusters
 
@@ -524,24 +417,24 @@ def print_clusters(pdict, single_counts, clusters, first_n_words):
     for idx, c in enumerate(clusters):
         # Sort words in cluster by single count frequency
         clusters_by_count.append(sorted(c, key=lambda w: single_counts[w], reverse=True))
-        print "Cluster %s - " % (idx+1),
+        print "Cluster %s (%d words)- " % (idx+1, len(c)),
         print clusters_by_count[idx]
 
     print "Words sorted by mean PMI"
     for idx, c in enumerate(clusters):
         # Sort words in cluster by mean PMI
         clusters_by_pmi.append(sorted(c, key=lambda w: mean_ppmi_of_word_in_cluster(pdict, w, c), reverse=True))
-        print "Cluster %s - " % (idx+1),
+        print "Cluster %s (%d words) - " % (idx+1, len(c)),
         print clusters_by_pmi[idx]
 
     print "Top %s words by single count frequency" % first_n_words
     for idx, c in enumerate(clusters_by_count):
-        print "Cluster %s - " % (idx+1),
+        print "Cluster %s (%d words) - " % (idx+1, len(c)),
         print clusters_by_count[idx][:first_n_words]
 
     print "Top %s words in clusters by PMI" % first_n_words
     for idx, c in enumerate(clusters_by_pmi):
-        print "Cluster %s - " % (idx+1),
+        print "Cluster %s (%d words) - " % (idx+1, len(c)),
         print clusters_by_pmi[idx][:first_n_words]
 
 def print_top_pmi_pairs(pdict, vocab, num):
@@ -660,94 +553,28 @@ def calculate_VI(clusters1, clusters2):
 
 ##### MAIN SCRIPT ######
 
-args = parser.parse_args()
+# Read vocab, co-occurence, score data from file
+print "Read JSON documents file..."
 
-print "Reading in stop word list from %s" % STOP_WORD_FILE
+with open(args.input) as input_file:
+    data = json.load(input_file)
 
-with open(STOP_WORD_FILE, 'r') as f:
-    lines = f.readlines()
+vocabulary = data['vocab']
+doc_single_counts = data['single_counts']
+pmi_lookup = data['score_table']
 
-for line in lines:
-    stop_words.add(line.strip())
+# Need to convert flattened keys back to tuple keys
+doc_pair_counts = {}
+for flat_key, value in data['pair_counts'].iteritems():
+    tuple_key = tuple(sorted(flat_key.split(',')))
+    doc_pair_counts[tuple_key] = value
 
-print "Processing documents from %s..." % args.doc
-
-with open(args.doc, 'r') as f:
-    lines = f.readlines()
-    num_docs = len(lines)
-
-print "Computing single counts..."
-
-for line in lines:
-    doc = {}
-    doc['doc_id'], doc['label'], doc['text'] = line.strip().split('\t')
-    doc['ctext'] = clean(doc['text'])
-    documents.append(doc)
-
-    words = list(set(doc['ctext'].split()))
-    vocabulary |= set(words)
-
-    doc_len = len(words)
-    for i in range(doc_len):
-        wi = words[i]
-        doc_single_counts[wi] += 1
-
-print "Removing low frequency words from vocabulary..."
-
-vocabulary = {w for w in vocabulary if doc_single_counts[w] > VOCAB_CUTOFF}
-
-print "The vocabulary size is %s words" % len(vocabulary)
-
-if args.window:
-    print "Computing pair counts with window size = %d" % args.window
-else:
-    print "Computing pair counts for documents..."
-
-if args.window:
-    for doc in documents:
-        words = list(set(doc['ctext'].split()))
-        doc_len = len(words)
-        for i in range(doc_len):
-            wi = words[i]
-            w_min = max(i - args.window, 0)
-            w_max = min(i + args.window, doc_len)
-            for j in range(w_min, w_max):
-                if j != i:
-                    wj = words[j]
-                    if wi in vocabulary and wj in vocabulary:
-                        pair = tuple(sorted([wi, wj]))
-                        doc_pair_counts[pair] += 1
-else:
-    for doc in documents:
-        words = list(set(doc['ctext'].split()))
-        doc_len = len(words)
-        for i in range(doc_len):
-            wi = words[i]
-            for j in range(i+1,doc_len):
-                wj = words[j]
-                if wi in vocabulary and wj in vocabulary:
-                    pair = tuple(sorted([wi, wj]))
-                    doc_pair_counts[pair] += 1
-
-if args.norm:
-    print "Calculating normalized PMI..."
-else:
-    print "Calculating PMI..."
-
-# Iterate only through pairs with non-zero counts
-for pair in doc_pair_counts:
-    wi, wj = pair
-    pmi = pmi_boolbool(doc_single_counts, doc_pair_counts, num_docs, wi, wj, normalized=args.norm)
-    if pmi is not None:
-        pmi_lookup[wi][wj] = pmi
-        # Duplicate PMI for reverse ordering of wi, wj for convenience
-        pmi_lookup[wj][wi] = pmi
-
+# Calculate clusters
 print "Target number of clusters = %s, using %s merges per iteration" % (args.n_clusters, args.merges_per_iter)
 print "Calculating clusters..."
 
 ti = time.time()
-my_clusters = calculate_clusters(documents, pmi_lookup, doc_single_counts, vocabulary, args.metric, args.n_clusters, use_freq_words=False, num_freq_words=500, merges_per_iter=args.merges_per_iter, verbose=False)
+my_clusters = calculate_clusters(pmi_lookup, doc_single_counts, vocabulary, args.metric, args.n_clusters, use_freq_words=False, num_freq_words=500, merges_per_iter=args.merges_per_iter, verbose=False)
 tf = time.time()
 
 print "\nUsed %s metric, clusters found:" % args.metric
@@ -755,6 +582,18 @@ print "\nUsed %s metric, clusters found:" % args.metric
 print_clusters(pmi_lookup, doc_single_counts, my_clusters, args.n_top_words)
 
 print "Clustering took %s seconds" % (tf-ti)
+
+# Construct dictionary containing clusters and parameters
+results = {}
+
+results['clusters'] = my_clusters
+results['metric'] = args.metric
+results['n_clusters'] = args.n_clusters
+results['merges_per_iter'] = args.merges_per_iter
+
+# Write results dictionary to JSON file
+with open(args.output, 'w') as output_file:
+    json.dump(results, output_file)
 
 if args.mallet_file:
     mallet_clusters, mallet_words = create_mallet_clusters(args.mallet_file, args.n_clusters, vocabulary)

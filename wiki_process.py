@@ -25,15 +25,17 @@ FILE_PREFIX = 'wiki_'
 parser = argparse.ArgumentParser(description='Perform co-occurence counts on Wikipedia data', add_help=False)
 
 ex_group = parser.add_argument_group(title='Mutually exclusive arguments (one is required)')
-required_args = ex_group.add_mutually_exclusive_group(required=True)
+ex_args = ex_group.add_mutually_exclusive_group(required=True)
+required_args = parser.add_argument_group('Required arguments')
 optional_args = parser.add_argument_group('Optional arguments')
 
 help_arg = parser.add_argument_group('Help')
 
-required_args.add_argument('--samples', type=int, help='Number of document samples')
-required_args.add_argument('--all_docs', action='store_true', help='Use all documents (no sampling)')
+ex_args.add_argument('--samples', type=int, help='Number of document samples')
+ex_args.add_argument('--all_docs', action='store_true', help='Use all documents (no sampling)')
 
-optional_args.add_argument('--output', required=False, help='Save processed and cleaned documents to JSON using specified filename') 
+required_args.add_argument('--output', required=True, help='Save processed and cleaned documents to JSON using specified filename')
+
 optional_args.add_argument('--seed', required=False, type=int, default=DEFAULT_SEED, help='Integer to use for random seed when sampling')
 optional_args.add_argument('--path', required=False, default=DEFAULT_ROOT_DIR, help='Directory containing Wikipedia data')
 optional_args.add_argument('--verbose', required=False, action='store_true', help='Verbose mode')
@@ -129,12 +131,15 @@ if args.verbose:
     print "Time to process, clean, and tokenize documents = %s seconds" % (tf-ti)
 
 # Save cleaned documents to JSON file
-if args.output:
-    if args.verbose:
-        print "Writing cleaned documents to JSON file %s..." % args.output 
-    ti = time.time()
-    with open(args.output, 'w') as output_file:
-        json.dump(docs, output_file)
-    tf = time.time()
-    if args.verbose:
-        print "Took %s seconds to write JSON FILE" % (tf-ti)
+if args.verbose:
+    print "Writing cleaned documents to JSON file %s..." % args.output
+
+ti = time.time()
+
+with open(args.output, 'w') as output_file:
+    json.dump(docs, output_file)
+
+tf = time.time()
+
+if args.verbose:
+    print "Took %s seconds to write JSON FILE" % (tf-ti)
