@@ -1,10 +1,9 @@
 from __future__ import division
-from collections import defaultdict
 import numpy as np
-import argparse, json, re, sys, time
+import argparse, json, time
 
 # Example usage:
-# python calculate_pmi.py --doc docs.txt --metric 'mean' -n_clusters 5 --merges_per_iter 10 --n_top_words 10 --mallet_file word_topic_counts.txt 
+# python calculate_pmi.py --doc docs.txt --metric 'mean' -n_clusters 5 --merges_per_iter 10 --n_top_words 10 --mallet_file word_topic_counts.txt
 
 ##### GLOBAL CONSTANTS #####
 
