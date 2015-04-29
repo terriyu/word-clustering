@@ -17,32 +17,6 @@ import numpy as np
 # --n_top_words - number of top words in each cluster to display (optional, default=20)
 # --mallet_file - MALLET word topics count file for evaluation of clusters (optional)
 
-##### ISSUES #####
-
-# Currently, word pairs are duplicated in construction of PMI table
-# i.e. pmi_dict[wi][wj] = pmi_dict[wj][wi]
-# ==> Should we keep it this way?
-
-# For any metric that involves averaging over word pairs,
-# there is the possibility that a word pair has no entry
-# in the PMI lookup table.
-# Currently, if that is the case, the score is considered to be zero.
-# ==> Possible solution: truncate all negative PMIs to zero 
-
-##### TODO #####
-
-# Do pair counts by N-word windows instead of entire document
-# (in progress)
-
-# Implement greedy cluster over most frequent words
-# (heuristic method from Percy Liang's thesis)
-
-# Try approximations for disjunction
-
-# Add option to save PMI table and clusters
-
-# Remove data cleaning from this module
-
 ##### GLOBAL CONSTANTS #####
 
 # Frequency cutoff for inclusion in vocabulary
