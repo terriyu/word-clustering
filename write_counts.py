@@ -2,7 +2,7 @@
 # given input JSON file containing documents
 
 from __future__ import division
-import argparse, json
+import argparse, json, time
 import process_util
 
 # Example usage: python write_counts.py --input docs.json --output counts_scores.json
@@ -31,4 +31,11 @@ args = parser.parse_args()
 with open(args.input, 'r') as input_file:
     docs = json.load(input_file)
 
+ti = time.time()
+
 vocab, single_counts, pair_counts, scores = process_util.counts_and_score_table(docs, window=args.window, norm_pmi=args.norm, json_file=args.output, docs_label=args.input, verbose=args.verbose)
+
+tf = time.time()
+
+if args.verbose:
+    print "Computing counts and score table took %s seconds" % (tf-ti)

@@ -32,7 +32,6 @@ required_args.add_argument('--output', required=True, help='Output JSON file con
 optional_args.add_argument('--n_clusters', required=False, default=10, type=int, help='Target number of clusters (default=10)')
 optional_args.add_argument('--merges_per_iter', required=False, default=10, type=int, help='Number of greedy merges to perform per iteration (default=10)')
 optional_args.add_argument('--n_top_words', required=False, default=20, help='Number of top words in each cluster to display (default=20)')
-optional_args.add_argument('--mallet_file', required=False, help='MALLET word topics count file to use for evaluation of clusters')
 
 help_arg.add_argument('-h', '--help', action='help')
 
@@ -408,6 +407,9 @@ def print_clusters(pdict, single_counts, clusters, first_n_words):
         2. Sort by mean PMI of each word with respect to other words in cluster
         3. Same as (1) but display only first_n_words
         4. Same as (2) but display only first_n_words
+
+        Finally, return sorted versions of the clusters,
+        by single count and PMI
     """
     clusters_by_count = []
     clusters_by_pmi = []
@@ -435,6 +437,8 @@ def print_clusters(pdict, single_counts, clusters, first_n_words):
     for idx, c in enumerate(clusters_by_pmi):
         print "Cluster %s (%d words) - " % (idx+1, len(c)),
         print clusters_by_pmi[idx][:first_n_words]
+
+    return clusters_by_count, clusters_by_pmi
 
 def print_top_pmi_pairs(pdict, vocab, num):
     """ Print highest PMI scores over all word pairs in the vocabulary
@@ -516,7 +520,7 @@ tf = time.time()
 
 print "\nUsed %s metric, clusters found:" % args.metric
 
-print_clusters(pmi_lookup, doc_single_counts, my_clusters, args.n_top_words)
+clusters_by_count, clusters_by_pmi: print_clusters(pmi_lookup, doc_single_counts, my_clusters, args.n_top_words)
 
 print "Clustering took %s seconds" % (tf-ti)
 
@@ -524,6 +528,8 @@ print "Clustering took %s seconds" % (tf-ti)
 results = {}
 
 results['clusters'] = my_clusters
+results['clusters_by_count'] = clusters_by_count
+results['clusters_by_pmi'] = clusters_by_pmi
 results['metric'] = args.metric
 results['n_clusters'] = args.n_clusters
 results['merges_per_iter'] = args.merges_per_iter
@@ -531,11 +537,6 @@ results['merges_per_iter'] = args.merges_per_iter
 # Write results dictionary to JSON file
 with open(args.output, 'w') as output_file:
     json.dump(results, output_file)
-
-if args.mallet_file:
-    mallet_clusters, mallet_words = create_mallet_clusters(args.mallet_file, args.n_clusters, vocabulary)
-    vi = calculate_VI(my_clusters, mallet_clusters)
-    print "Variation of information distance between our clusters and MALLET = %s" % vi
 
 #print_top_pmi_for_freq_words(pmi_dict, 5)
 #print_top_pmi_pairs(pmi_dict, vocabulary, 20)
