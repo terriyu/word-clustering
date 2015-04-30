@@ -1,15 +1,14 @@
-# Writes a JSON file containing vocabulary, co-occurence counts, and score table,
-# given input JSON file containing documents
+# Computes variation of information between two clusters
 
 from __future__ import division
 import numpy as np
 import argparse, json
 
-# Example usage: python evaluate_vi.py --
+# Example usage: python evaluate_vi.py --pmi_lda pmi_clusters.json word_topic_counts.txt
 
 ##### PARSER #####
 
-parser = argparse.ArgumentParser(description='Evalute variation of information between two clusters', add_help=False)
+parser = argparse.ArgumentParser(description='Evaluate variation of information between two clusters', add_help=False)
 
 ex_group = parser.add_argument_group(title='Mutually exclusive arguments (one is required)')
 ex_args = ex_group.add_mutually_exclusive_group(required=True)

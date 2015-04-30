@@ -27,3 +27,4 @@ Implement greedy cluster over most frequent words
 
 Try approximations for disjunction
 
+Add notes about data structure of JSON files
