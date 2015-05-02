@@ -2,7 +2,7 @@
 
 from __future__ import division
 import numpy as np
-import argparse, codecs, json, os, time
+import argparse, codecs, json, os, re, time
 import process_util 
 
 # Example usage:

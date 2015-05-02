@@ -38,4 +38,4 @@ vocab, single_counts, pair_counts, scores = process_util.counts_and_score_table(
 tf = time.time()
 
 if args.verbose:
-    print "Computing counts and score table took %s seconds" % (tf-ti)
+    print "Computing counts and score table + writing JSON output took %s seconds" % (tf-ti)

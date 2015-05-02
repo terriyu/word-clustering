@@ -3,6 +3,7 @@
 from __future__ import division
 import numpy as np
 import argparse, json
+import process_util
 
 # Example usage: python evaluate_vi.py --pmi_lda pmi_clusters.json word_topic_counts.txt
 
@@ -32,43 +33,6 @@ help_arg.add_argument('-h', '--help', action='help')
 args = parser.parse_args()
 
 ##### EVALUATION METHODS #####
-
-def create_mallet_clusters(filename, num_clusters, vocab):
-    """ Create clusters corresponding to MALLET word topic counts file,
-        given the number of clusters, also return the list of words in the MALLET clusters
-
-        Only include a word in the MALLET clusters if it is in our PMI vocabulary
-    """
-    # Words that appear in the MALLET clusters
-    cluster_words = []
-    # Clusters corresponding to MALLET word topic counts
-    clusters = [None] * num_clusters
-    # Same as above but with counts
-    clusters_counts = [None] * num_clusters
-
-    with open(filename, 'r') as f:
-        lines = f.readlines()
-
-    for line in lines:
-        tokens = line.strip().split()
-        # Extract word and highest count from MALLET file
-        # Highest count has form i:j where i is the cluster id
-        # and j is the number of counts
-        word, highest_count  = tokens[1:3]
-        if word in vocab:
-            cluster_words.append(word)
-            cluster_idx, count = [int(s) for s in highest_count.split(':')]
-            if clusters[cluster_idx] is None:
-                clusters[cluster_idx] = [word]
-                clusters_counts[cluster_idx] = [(word, count)]
-            else:
-                clusters[cluster_idx].append(word)
-                clusters_counts[cluster_idx].append((word, count))
-
-    for c in clusters_counts:
-        c.sort(key=lambda x: x[1], reverse=True)
-
-    return clusters, clusters_counts, cluster_words
 
 def calculate_VI(clusters1, clusters2):
     """ Calculate variation of information between two sets of clusters
@@ -122,10 +86,10 @@ if args.pmi_lda is not None:
     with open(args.pmi_lda[0], 'r') as input_file:
         pmi_clusters_data = json.load(input_file)
     clusters1 = pmi_clusters_data['clusters']
-    clusters2, clusters2_counts, clusters2_words = create_mallet_clusters(args.pmi_lda[1], args.n_clusters, vocab)
+    clusters2, clusters2_counts, clusters2_words = process_util.create_mallet_clusters(args.pmi_lda[1], args.n_clusters, vocab)
 else:
-    clusters1, clusters1_counts, clusters1_words = create_mallet_clusters(args.lda_lda[0], args.n_clusters, vocab)
-    clusters2, clusters2_counts, clusters2_words = create_mallet_clusters(args.lda_lda[1], args.n_clusters, vocab)
+    clusters1, clusters1_counts, clusters1_words = process_util.create_mallet_clusters(args.lda_lda[0], args.n_clusters, vocab)
+    clusters2, clusters2_counts, clusters2_words = process_util.create_mallet_clusters(args.lda_lda[1], args.n_clusters, vocab)
 
 if args.verbose:
     print "Cluster sizes for cluster 1"
@@ -133,6 +97,7 @@ if args.verbose:
     print "Cluster sizes for cluster 2"
     print [len(c) for c in clusters2]
 
+# Calculate variation of information
 vi = calculate_VI(clusters1, clusters2)
 
 print "Variation of information between clusters = %s" % vi

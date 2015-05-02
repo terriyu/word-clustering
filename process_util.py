@@ -58,6 +58,43 @@ def clean_tokenize(text, stop_words=stop_words_default):
     tokens = [t for t in tokens if ((t not in PUNCT_REMOVE_TOKEN) and (t not in stop_words) and (t not in MISC_REMOVE) and (t[0] != "'"))]
     return tokens
 
+def create_mallet_clusters(filename, num_clusters, vocab):
+    """ Create clusters corresponding to MALLET word topic counts file,
+        given the number of clusters, also return the list of words in the MALLET clusters
+
+        Only include a word in the MALLET clusters if it is in our PMI vocabulary
+    """
+    # Words that appear in the MALLET clusters
+    cluster_words = []
+    # Clusters corresponding to MALLET word topic counts
+    clusters = [None] * num_clusters
+    # Same as above but with counts
+    clusters_counts = [None] * num_clusters
+
+    with open(filename, 'r') as f:
+        lines = f.readlines()
+
+    for line in lines:
+        tokens = line.strip().split()
+        # Extract word and highest count from MALLET file
+        # Highest count has form i:j where i is the cluster id
+        # and j is the number of counts
+        word, highest_count  = tokens[1:3]
+        if word in vocab:
+            cluster_words.append(word)
+            cluster_idx, count = [int(s) for s in highest_count.split(':')]
+            if clusters[cluster_idx] is None:
+                clusters[cluster_idx] = [word]
+                clusters_counts[cluster_idx] = [(word, count)]
+            else:
+                clusters[cluster_idx].append(word)
+                clusters_counts[cluster_idx].append((word, count))
+
+    for c in clusters_counts:
+        c.sort(key=lambda x: x[1], reverse=True)
+
+    return clusters, clusters_counts, cluster_words
+
 ##### SCORING METHODS ######
 
 def pmi_boolbool(single_counts, pair_counts, N_docs, wi, wj, normalized=False):
