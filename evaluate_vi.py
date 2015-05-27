@@ -36,6 +36,8 @@ args = parser.parse_args()
 
 def calculate_VI(clusters1, clusters2):
     """ Calculate variation of information between two sets of clusters
+
+        Also return entropies of cluster 1 and cluster 2
     """
     if len(clusters1) != len(clusters2):
         print "Warning: number of clusters does not match"
@@ -50,11 +52,18 @@ def calculate_VI(clusters1, clusters2):
 
     n = n1
     vi = 0.0
+    h_1 = 0.0 # entropy of first clustering
+    h_2 = 0.0 # entropy of second clustering
     for i in range(len(clusters1)):
+        # Compute probability for clustering 1
+        p_i = len(clusters1[i])/n
+        # Compute clustering 1 entropy
+        h_1 -= p_i * np.log2(p_i)
         for j in range(len(clusters2)):
-            # Compute probabilities for single clusters
-            p_i = len(clusters1[i])/n
+            # Compute probability for clustering 2
             q_j = len(clusters2[j])/n
+            # Compute clustering 2 entropy
+            h_2 -= q_j * np.log2(q_j)
             # Check if clusters i and j have an intersection
             set_i = set(clusters1[i])
             set_j = set(clusters2[j])
@@ -65,7 +74,10 @@ def calculate_VI(clusters1, clusters2):
                 r_ij = len(intersection_ij)/n
                 vi -= r_ij * (np.log2(r_ij/p_i) + np.log2(r_ij/q_j))
 
-    return vi
+    # Compute mutual information between clustering 1 and clustering 2
+    mi = (h_1 + h_2 - vi)/2
+
+    return vi, h_1, h_2, mi
 
 ##### MAIN SCRIPT #####
 
@@ -98,6 +110,9 @@ if args.verbose:
     print [len(c) for c in clusters2]
 
 # Calculate variation of information
-vi = calculate_VI(clusters1, clusters2)
+vi, h_1, h_2, mi = calculate_VI(clusters1, clusters2)
 
-print "Variation of information between clusters = %s" % vi
+print "Variation of information between clusterings = %s" % vi
+print "Entropy of clustering 1 = %s" % h_1
+print "Entropy of clustering 2 = %s" % h_2
+print "Mutual information between clustering 1 and clustering 2 = %s" % mi

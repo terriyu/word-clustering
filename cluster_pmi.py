@@ -522,7 +522,7 @@ print "\nUsed %s metric, clusters found:" % args.metric
 
 clusters_by_count, clusters_by_pmi = print_clusters(pmi_lookup, doc_single_counts, my_clusters, args.n_top_words)
 
-print "Clustering took %s seconds" % (tf-ti)
+print "Clustering took %s seconds for %d merges per iteration" % (tf-ti, args.merges_per_iter)
 
 # Construct dictionary containing clusters and parameters
 results = {}

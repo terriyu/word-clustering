@@ -53,3 +53,5 @@ Save counts with clusters
 Infer number of clusters from MALLET file
 
 Add score option to evaluate_coherence.py
+
+Re-write code to process counts at the same time as documents

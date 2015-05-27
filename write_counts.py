@@ -18,6 +18,7 @@ help_arg = parser.add_argument_group('Help')
 required_args.add_argument('--input', required=True, help='Input JSON file containing documents')
 required_args.add_argument('--output', required=True, help='Output JSON file containing vocabulary, co-occurence counts, and score table')
 
+optional_args.add_argument('--N', required=False, type=int, help='Only use first N documents')
 optional_args.add_argument('--norm', required=False, action='store_true', help='Calculate normalized PMI instead of conventional PMI')
 optional_args.add_argument('--window', required=False, default=None, type=int, help='Window size of +/- argument words for pair counts (default=entire document)')
 optional_args.add_argument('--verbose', required=False, action='store_true', help='Verbose mode')
@@ -30,6 +31,9 @@ args = parser.parse_args()
 
 with open(args.input, 'r') as input_file:
     docs = json.load(input_file)
+
+if args.N:
+    docs = docs[:args.N]
 
 ti = time.time()
 
