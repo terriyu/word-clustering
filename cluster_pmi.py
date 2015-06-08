@@ -257,19 +257,24 @@ def greedy_merge(pdict, clusters, metric, target_num_clusters, merges_per_iter, 
         candidates.sort(key=lambda(x): x[1], reverse=False)
 
     iteration = 0
-    while len(clusters) > target_num_clusters:
+    while len(clusters) > 1:
         iteration += 1
         merges_executed = 0
         # Perform specified number of merges per iteration
         for k in range(merges_per_iter):
             if verbose: print "Number of clusters = %s, number of candidates = %s" % (len(clusters), len(candidates))
-            if (len(candidates) == 0) or (len(clusters) <= target_num_clusters):
-                print "break"
+
+            if len(clusters) == target_num_clusters:
+                # Target number of clusters reached, save clusters
+                clusters_target = clusters[:]
+
+            if (len(candidates) == 0):
+                if verbose: print "Ran out of candidate merges, breaking out of loop"
                 break
 
             (cm1, cm2), merge_score = candidates[0]
 
-            print "[iteration = %s] Merging clusters (%s, %s) with score %s " % (iteration, cm1, cm2, merge_score)
+            print "[iteration = %s, num of clusters = %s] Merging clusters (%s, %s) with score %s " % (iteration, len(clusters), cm1, cm2, merge_score)
             if verbose: print clusters[cm1], clusters[cm2]
 
             # Merge top scoring cluster pair
@@ -330,7 +335,7 @@ def greedy_merge(pdict, clusters, metric, target_num_clusters, merges_per_iter, 
             # Sort so that lowest scores are at beginning of list
             candidates.sort(key=lambda(x): x[1], reverse=False)
 
-    return clusters
+    return clusters_target
 
 def calculate_clusters(pdict, single_counts, vocab, metric, target_num_clusters, use_freq_words=False, num_freq_words=100, merges_per_iter=1, cache=True, verbose=False):
     """ Calculate target number of clusters using specified metric and greedy approaches

@@ -29,9 +29,11 @@ args = parser.parse_args()
 
 ##### MAIN SCRIPT #####
 
+# Load documents
 with open(args.input, 'r') as input_file:
     docs = json.load(input_file)
 
+# If flag specified, use first N documents
 if args.N:
     docs = docs[:args.N]
 

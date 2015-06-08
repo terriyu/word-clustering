@@ -66,10 +66,8 @@ def create_mallet_clusters(filename, num_clusters, vocab):
     """
     # Words that appear in the MALLET clusters
     cluster_words = []
-    # Clusters corresponding to MALLET word topic counts
-    clusters = [None] * num_clusters
-    # Same as above but with counts
-    clusters_counts = [None] * num_clusters
+    # Clusters - each cluster is a list with entries in format (word, counts)
+    clusters_with_counts = [None] * num_clusters
 
     with open(filename, 'r') as f:
         lines = f.readlines()
@@ -83,17 +81,20 @@ def create_mallet_clusters(filename, num_clusters, vocab):
         if word in vocab:
             cluster_words.append(word)
             cluster_idx, count = [int(s) for s in highest_count.split(':')]
-            if clusters[cluster_idx] is None:
-                clusters[cluster_idx] = [word]
-                clusters_counts[cluster_idx] = [(word, count)]
+            if clusters_with_counts[cluster_idx] is None:
+                clusters_with_counts[cluster_idx] = [(word, count)]
             else:
-                clusters[cluster_idx].append(word)
-                clusters_counts[cluster_idx].append((word, count))
+                clusters_with_counts[cluster_idx].append((word, count))
 
-    for c in clusters_counts:
+    for c in clusters_with_counts:
         c.sort(key=lambda x: x[1], reverse=True)
 
-    return clusters, clusters_counts, cluster_words
+    # Clusters with words only (sorted in descending count order)
+    clusters_words_only = []
+    for c in clusters_with_counts:
+        clusters_words_only.append([x[0] for x in c])
+
+    return clusters_words_only, clusters_counts, cluster_words
 
 ##### SCORING METHODS ######
 
