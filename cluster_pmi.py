@@ -3,7 +3,7 @@ import numpy as np
 import argparse, json, time
 
 # Example usage:
-# python calculate_pmi.py --metric 'mean' -n_clusters 5 --merges_per_iter 10 --n_top_words 10 --mallet_file word_topic_counts.txt
+# python cluster_pmi.py --metric 'mean' -n_clusters 5 --merges_per_iter 10 --n_top_words 10 --mallet_file word_topic_counts.txt
 
 ##### GLOBAL CONSTANTS #####
 
@@ -228,16 +228,15 @@ def generate_score_table(pdict, clusters, metric):
 
         Score table has form ([i,j], score) where i and j are cluster indices
     """
-    cluster_size = len(clusters)
+    ids = clusters.keys()
+    cluster_size = len(ids)
     candidates = []
 
     # Calculate initial score table
     for i in range(cluster_size):
         for j in range(i+1,cluster_size):
-            score = score_clusters(pdict, metric, clusters[i][1], clusters[j][1])
-            # Note the cluster indices must be in a list (e.g. [i,j])
-            # so that they are mutable
-            candidates.append([[i, j], score])
+            score = score_clusters(pdict, metric, clusters[ids[i]], clusters[ids[j]])
+            candidates.append(((ids[i], ids[j]), score))
 
     return candidates
 
@@ -246,7 +245,7 @@ def greedy_merge(pdict, clusters, metric, target_num_clusters, merges_per_iter, 
 
         Does specified number of merges per iteration and uses caching if flag is set to True
     """
-    # Generate initial score table
+    # Generate initial score table, which we call "candidates"
     candidates = generate_score_table(pdict, clusters, metric)
 
     # Sort score table
@@ -258,20 +257,22 @@ def greedy_merge(pdict, clusters, metric, target_num_clusters, merges_per_iter, 
         candidates.sort(key=lambda(x): x[1], reverse=False)
 
     # Initialize merge tree, assumes one word per cluster
-    merge_tree = {c[0]: c[1][0] for c in clusters}
+    merge_tree = clusters.copy()
     merge_id_next = len(clusters)
 
     iteration = 0
     merges_executed = 0
     while len(clusters) > 1:
         iteration += 1
+        # ids from before merges in the upcoming iteration
+        old_ids = set(clusters.keys())
         # Perform specified number of merges per iteration
         for k in range(merges_per_iter):
             if verbose: print "Number of clusters = %s, number of candidates = %s" % (len(clusters), len(candidates))
 
             if len(clusters) == target_num_clusters:
                 # Target number of clusters reached, save clusters
-                clusters_target = [c[1] for c in clusters]
+                clusters_target = [c for c in clusters.itervalues()]
 
             if (len(candidates) == 0):
                 if verbose: print "Ran out of candidate merges, breaking out of loop"
@@ -284,63 +285,50 @@ def greedy_merge(pdict, clusters, metric, target_num_clusters, merges_per_iter, 
             if verbose: print clusters[cm1], clusters[cm2]
 
             # Merge top scoring cluster pair
-            id1, wlist1 = clusters[cm1]
-            id2, wlist2 = clusters[cm2]
-            new_cluster = [merge_id_next, wlist1 + wlist2]
+            wlist1 = clusters[cm1]
+            wlist2 = clusters[cm2]
+            clusters[merge_id_next] = wlist1 + wlist2
 
+            # Delete clusters that were merged
             del clusters[cm1]
-            del clusters[cm2-1]
-            clusters.append(new_cluster)
+            del clusters[cm2]
+
             merges_executed += 1
 
             # Update merge tree
-            merge_tree[merge_id_next] = (id1, id2)
+            merge_tree[merge_id_next] = (cm1, cm2)
 
             # Increment merge_id
             merge_id_next += 1
 
-            deletions = 0
-            # Delete entries from table, which contain merged clusters
-            for idx in xrange(len(candidates) - 1, -1, -1):
-                cand = candidates[idx]
-                i,j = cand[0]
-                if (i == cm1) or (i == cm2) or (j == cm1) or (j == cm2):
-                    if verbose: print "(%s,%s)" % (i,j)
-                    del candidates[idx]
-                    deletions += 1
-            if verbose: print "Number of deletions = %s" % deletions
+            # Delete candidates containing the clusters we just merged
+            old_cand_size = len(candidates)
+            candidates = filter(lambda c: c[0][0] != cm1 and c[0][0] != cm2 and c[0][1] != cm1 and c[0][1] != cm2, candidates)
 
-            # Update cluster indexes in score table
-            for cand in candidates:
-                # Note j is always larger than i
-                i, j = cand[0]
-                if i > cm1:
-                    if i < cm2:
-                        i_updated = i - 1
-                    else:
-                        i_updated = i - 2
-                    cand[0][0] = i_updated
-                if j > cm1:
-                    if j < cm2:
-                        j_updated = j - 1
-                    else:
-                        j_updated = j - 2
-                    cand[0][1] = j_updated
+           if verbose: print "Number of deletions = %s" % (old_cand_size - len(candidates))
 
         # Finish updating score table
         if cache:
-            cluster_size = len(clusters)
-            # Add scores for new cluster to score table
-            for i in range(cluster_size - merges_executed, cluster_size):
+            ids = sorted(clusters.keys())
+            # old ids remaining after merges
+            remain_old_ids = old_ids.intersection(set(ids))
+            if remain_old_ids:
+                # Find newest "old" cluster id
+                last_id = max(remain_old_ids)
+                last_idx = ids.index(last_id)
+            else:
+                # Case where all the old clusters were merged during
+                # the last iteration (remain_old_ids is empty set)
+                last_idx = -1
+            # Calculate new scores for 1) new id - new id, 2) new id - old id
+            # where new ids correspond to newly merged clusters
+            for i in range(last_idx+1, len(ids)):
                 for j in range(i):
-                    # Note the cluster indices must be in a list (e.g. [i,j])
-                    # so that they are mutable
-                    score = score_clusters(pdict, metric, clusters[j][1], clusters[i][1])
-                    if verbose: print "Adding (%s, %s)" % (j, i)
-                    candidates.append([[j, i], score])
+                    score = score_clusters(pdict, metric, clusters[ids[j]], clusters[ids[i]])
+                    candidates.append(((ids[j], ids[i]), score))
         else:
             # No caching, re-generate entire score table
-            candidates = generate_score_table(pdict, [c[1] for c in clusters], metric)
+            candidates = generate_score_table(pdict, [c for c in clusters.itervalues()], metric)
 
         # Sort score table
         if metric != 'min':
@@ -364,7 +352,9 @@ def calculate_clusters(pdict, single_counts, vocab, metric, target_num_clusters,
         print 'No known coherence metric specified'
         return
 
-    clusters = []
+    # Clusters are stored as dictionary with key being id,
+    # value being list of vocab words
+    clusters = {}
 
     if use_freq_words:
         if num_freq_words > len(vocab):
@@ -384,7 +374,7 @@ def calculate_clusters(pdict, single_counts, vocab, metric, target_num_clusters,
         clusters.append(leftover)
     else:
         for idx, v_word in enumerate(vocab):
-            clusters.append([idx, [v_word]])
+            clusters[idx] = [v_word]
         clusters, merge_tree = greedy_merge(pdict, clusters, metric, target_num_clusters, merges_per_iter, cache, verbose)
 
     return clusters, merge_tree
