@@ -1,4 +1,9 @@
 *~
 *.pyc
+*.html
 wiki_data/
-mallet_wtc/
+mallet/
+clusters/
+pmi/
+docs/sotu/cleaned
+plot/

@@ -3,7 +3,7 @@ import numpy as np
 import argparse, json, time
 
 # Example usage:
-# python calculate_pmi.py --doc docs.txt --metric 'mean' -n_clusters 5 --merges_per_iter 10 --n_top_words 10 --mallet_file word_topic_counts.txt
+# python calculate_pmi.py --metric 'mean' -n_clusters 5 --merges_per_iter 10 --n_top_words 10 --mallet_file word_topic_counts.txt
 
 ##### GLOBAL CONSTANTS #####
 
@@ -32,6 +32,7 @@ required_args.add_argument('--output', required=True, help='Output JSON file con
 optional_args.add_argument('--n_clusters', required=False, default=10, type=int, help='Target number of clusters (default=10)')
 optional_args.add_argument('--merges_per_iter', required=False, default=10, type=int, help='Number of greedy merges to perform per iteration (default=10)')
 optional_args.add_argument('--n_top_words', required=False, default=20, help='Number of top words in each cluster to display (default=20)')
+optional_args.add_argument('--tree_html', required=False, help='Filename for HTML output representing merge tree')
 
 help_arg.add_argument('-h', '--help', action='help')
 
@@ -233,7 +234,7 @@ def generate_score_table(pdict, clusters, metric):
     # Calculate initial score table
     for i in range(cluster_size):
         for j in range(i+1,cluster_size):
-            score = score_clusters(pdict, metric, clusters[i], clusters[j])
+            score = score_clusters(pdict, metric, clusters[i][1], clusters[j][1])
             # Note the cluster indices must be in a list (e.g. [i,j])
             # so that they are mutable
             candidates.append([[i, j], score])
@@ -256,33 +257,47 @@ def greedy_merge(pdict, clusters, metric, target_num_clusters, merges_per_iter, 
         # Sort so that lowest scores are at beginning of list
         candidates.sort(key=lambda(x): x[1], reverse=False)
 
+    # Initialize merge tree, assumes one word per cluster
+    merge_tree = {c[0]: c[1][0] for c in clusters}
+    merge_id_next = len(clusters)
+
     iteration = 0
+    merges_executed = 0
     while len(clusters) > 1:
         iteration += 1
-        merges_executed = 0
         # Perform specified number of merges per iteration
         for k in range(merges_per_iter):
             if verbose: print "Number of clusters = %s, number of candidates = %s" % (len(clusters), len(candidates))
 
             if len(clusters) == target_num_clusters:
                 # Target number of clusters reached, save clusters
-                clusters_target = clusters[:]
+                clusters_target = [c[1] for c in clusters]
 
             if (len(candidates) == 0):
                 if verbose: print "Ran out of candidate merges, breaking out of loop"
                 break
 
-            (cm1, cm2), merge_score = candidates[0]
+            # Extract first candidate merge
+            (cm1, cm2), merge_score  = candidates[0]
 
-            print "[iteration = %s, num of clusters = %s] Merging clusters (%s, %s) with score %s " % (iteration, len(clusters), cm1, cm2, merge_score)
+            print "[iteration = %s, total merges = %s, num of clusters = %s] Merging clusters (%s, %s) with score %s " % (iteration, merges_executed, len(clusters), cm1, cm2, merge_score)
             if verbose: print clusters[cm1], clusters[cm2]
 
             # Merge top scoring cluster pair
-            new_cluster = clusters[cm1] + clusters[cm2]
+            id1, wlist1 = clusters[cm1]
+            id2, wlist2 = clusters[cm2]
+            new_cluster = [merge_id_next, wlist1 + wlist2]
+
             del clusters[cm1]
             del clusters[cm2-1]
             clusters.append(new_cluster)
             merges_executed += 1
+
+            # Update merge tree
+            merge_tree[merge_id_next] = (id1, id2)
+
+            # Increment merge_id
+            merge_id_next += 1
 
             deletions = 0
             # Delete entries from table, which contain merged clusters
@@ -320,12 +335,12 @@ def greedy_merge(pdict, clusters, metric, target_num_clusters, merges_per_iter, 
                 for j in range(i):
                     # Note the cluster indices must be in a list (e.g. [i,j])
                     # so that they are mutable
-                    score = score_clusters(pdict, metric, clusters[j], clusters[i])
+                    score = score_clusters(pdict, metric, clusters[j][1], clusters[i][1])
                     if verbose: print "Adding (%s, %s)" % (j, i)
                     candidates.append([[j, i], score])
         else:
             # No caching, re-generate entire score table
-            candidates = generate_score_table(pdict, clusters, metric)
+            candidates = generate_score_table(pdict, [c[1] for c in clusters], metric)
 
         # Sort score table
         if metric != 'min':
@@ -335,7 +350,7 @@ def greedy_merge(pdict, clusters, metric, target_num_clusters, merges_per_iter, 
             # Sort so that lowest scores are at beginning of list
             candidates.sort(key=lambda(x): x[1], reverse=False)
 
-    return clusters_target
+    return clusters_target, merge_tree
 
 def calculate_clusters(pdict, single_counts, vocab, metric, target_num_clusters, use_freq_words=False, num_freq_words=100, merges_per_iter=1, cache=True, verbose=False):
     """ Calculate target number of clusters using specified metric and greedy approaches
@@ -368,11 +383,11 @@ def calculate_clusters(pdict, single_counts, vocab, metric, target_num_clusters,
                 leftover.append(v_word)
         clusters.append(leftover)
     else:
-        for v_word in vocab:
-            clusters.append([v_word])
-        clusters = greedy_merge(pdict, clusters, metric, target_num_clusters, merges_per_iter, cache, verbose)
+        for idx, v_word in enumerate(vocab):
+            clusters.append([idx, [v_word]])
+        clusters, merge_tree = greedy_merge(pdict, clusters, metric, target_num_clusters, merges_per_iter, cache, verbose)
 
-    return clusters
+    return clusters, merge_tree
 
 ##### UTILITY METHODS ######
 
@@ -497,6 +512,36 @@ def print_docs_for_pair(wi, wj):
             count += 1
     print "Total number of matched docs: %s" % count
 
+def print_tree_html(filename, tree):
+
+    def print_tree_helper(root, node_id):
+        if type(tree[root]) != tuple:
+            print >>f, r'<li>',
+            print >>f, tree[root]
+        else:
+            print >>f, r'<li>',
+            print >>f, node_id
+            print >>f, r'<ul>'
+            # Print left child
+            print_tree_helper(tree[root][0], node_id + '0')
+            # Print right child
+            print_tree_helper(tree[root][1], node_id + '1')
+            print >>f, r'</ul>'
+
+    f = open(filename, 'w')
+    print >>f, r'<!DOCTYPE html>'
+    print >>f, r'<html>'
+    print >>f, r'<head>'
+    print >>f, r'<title>Cluster merge tree</title>'
+    print >>f, r'</head>'
+    print >>f, r'<body>'
+    print >>f, r'<ul>'
+    print_tree_helper(max(tree.keys()), '0')
+    print >>f, r'</ul>'
+    print >>f, r'</body>'
+    print >>f, r'</html>'
+    f.close()
+
 ##### MAIN SCRIPT ######
 
 # Read vocab, co-occurence, score data from file
@@ -520,28 +565,33 @@ print "Target number of clusters = %s, using %s merges per iteration" % (args.n_
 print "Calculating clusters..."
 
 ti = time.time()
-my_clusters = calculate_clusters(pmi_lookup, doc_single_counts, vocabulary, args.metric, args.n_clusters, use_freq_words=False, num_freq_words=500, merges_per_iter=args.merges_per_iter, verbose=False)
+clusters, merge_tree  = calculate_clusters(pmi_lookup, doc_single_counts, vocabulary, args.metric, args.n_clusters, use_freq_words=False, num_freq_words=500, merges_per_iter=args.merges_per_iter, verbose=False)
 tf = time.time()
 
 print "\nUsed %s metric, clusters found:" % args.metric
 
-clusters_by_count, clusters_by_pmi = print_clusters(pmi_lookup, doc_single_counts, my_clusters, args.n_top_words)
+clusters_by_count, clusters_by_pmi = print_clusters(pmi_lookup, doc_single_counts, clusters, args.n_top_words)
 
 print "Clustering took %s seconds for %d merges per iteration" % (tf-ti, args.merges_per_iter)
 
 # Construct dictionary containing clusters and parameters
 results = {}
 
-results['clusters'] = my_clusters
+results['clusters'] = clusters
 results['clusters_by_count'] = clusters_by_count
 results['clusters_by_pmi'] = clusters_by_pmi
 results['metric'] = args.metric
 results['n_clusters'] = args.n_clusters
 results['merges_per_iter'] = args.merges_per_iter
+results['merge_tree'] = merge_tree
 
 # Write results dictionary to JSON file
 with open(args.output, 'w') as output_file:
     json.dump(results, output_file)
+
+# Print merge tree to HTML
+if args.tree_html:
+    print_tree_html(args.tree_html, merge_tree)
 
 #print_top_pmi_for_freq_words(pmi_dict, 5)
 #print_top_pmi_pairs(pmi_dict, vocabulary, 20)

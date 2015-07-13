@@ -23,7 +23,7 @@ MISC_REMOVE = set(["``", "..."])
 # Frequency cutoff for inclusion in vocabulary
 # Single count frequency must be larger than this number
 # to be included in the vocabulary
-VOCAB_CUTOFF = 5
+VOCAB_CUTOFF = 10
 
 ##### CREATE DEFAULT STOP WORD SET #####
 
