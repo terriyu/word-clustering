@@ -124,7 +124,7 @@ def pmi_boolbool(single_counts, pair_counts, N_docs, wi, wj, normalized=False):
 
 ##### CO-OCCURENCE COUNTS #####
 
-def counts_and_score_table(docs, window=None, norm_pmi=False, json_file=False, docs_label=None, verbose=True):
+def counts_and_score_table(docs, window=None, norm_pmi=False, json_file=False, docs_label=None, cutoff=VOCAB_CUTOFF, verbose=True):
     
     # Set of words in vocabulary
     vocabulary = set()
@@ -158,7 +158,7 @@ def counts_and_score_table(docs, window=None, norm_pmi=False, json_file=False, d
     if verbose:
         print "Removing low frequency words from vocabulary..."
     
-    vocabulary = {w for w in vocabulary if doc_single_counts[w] > VOCAB_CUTOFF}
+    vocabulary = {w for w in vocabulary if doc_single_counts[w] > cutoff}
     
     if verbose:
         print "The vocabulary size is %s words" % len(vocabulary)

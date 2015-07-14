@@ -5,7 +5,7 @@ import argparse, json, time
 import process_util
 from sklearn.datasets import fetch_20newsgroups
 
-# Example usage: python newsgroups_process.py --train train.json --test test.json
+# Example usage: python newsgroups_process.py --subset train --output train.json
 
 ##### PARSER #####
 
@@ -15,8 +15,8 @@ required_args = parser.add_argument_group('Required arguments')
 optional_args = parser.add_argument_group('Optional arguments')
 help_arg = parser.add_argument_group('Help')
 
-required_args.add_argument('--train', required=True, help='Output JSON file containing cleaned documents from training set')
-required_args.add_argument('--test', required=True, help='Output JSON file containing cleaned documents from test set')
+required_args.add_argument('--subset', required=True, choices=['train', 'test', 'all'], help='Subset argument train, test, or all')
+required_args.add_argument('--output', required=True, help='Output JSON file containing cleaned documents from training set')
 
 optional_args.add_argument('--stop', required=False, help='File containing stop words, one word per line')
 optional_args.add_argument('--verbose', required=False, action='store_true', help='Verbose mode')
@@ -39,40 +39,27 @@ if args.verbose:
 # Extract tokens for each document
 
 # data only contains document text
-train_docs = []
-test_docs =[]
+docs = []
 
 # Get newsgroups data and remove metadata (headers, footers, and quotes)
-train = fetch_20newsgroups(subset='train', remove=('headers', 'footers', 'quotes'))
-test = fetch_20newsgroups(subset='test', remove=('headers', 'footers', 'quotes'))
+newsgroups = fetch_20newsgroups(subset=args.subset, remove=('headers', 'footers', 'quotes'))
 
 # Clean document text
-for idx, line in enumerate(train.data):
+for idx, line in enumerate(newsgroups.data):
     text = line.strip()
     if args.stop:
         ctokens = process_util.clean_tokenize(text, stop_words=args.stop)
     else:
         ctokens = process_util.clean_tokenize(text)
 
-    train_docs.append(ctokens)
-
-for idx, line in enumerate(test.data):
-    text = line.strip()
-    if args.stop:
-        ctokens = process_util.clean_tokenize(text, stop_words=args.stop)
-    else:
-        ctokens = process_util.clean_tokenize(text)
-
-    test_docs.append(ctokens)
+    docs.append(ctokens)
 
 if args.verbose:
-    print "Writing list of cleaned documents to JSON files %s and %s" % (args.train, args.test)
+    print "Writing list of cleaned documents to JSON file %s" % args.output
 
 # Write document tokens to JSON files
-with open(args.train, 'w') as output_file:
-    json.dump(train_docs, output_file)
-with open(args.test, 'w') as output_file:
-    json.dump(test_docs, output_file)
+with open(args.output, 'w') as output_file:
+    json.dump(docs, output_file)
 
 tf = time.time()
 

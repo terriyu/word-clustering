@@ -18,6 +18,7 @@ help_arg = parser.add_argument_group('Help')
 required_args.add_argument('--input', required=True, help='Input JSON file containing documents')
 required_args.add_argument('--output', required=True, help='Output JSON file containing vocabulary, co-occurence counts, and score table')
 
+optional_args.add_argument('--cutoff', required=False, type=int, help='Count cutoff for vocabulary')
 optional_args.add_argument('--N', required=False, type=int, help='Only use first N documents')
 optional_args.add_argument('--norm', required=False, action='store_true', help='Calculate normalized PMI instead of conventional PMI')
 optional_args.add_argument('--window', required=False, default=None, type=int, help='Window size of +/- argument words for pair counts (default=entire document)')
@@ -39,7 +40,7 @@ if args.N:
 
 ti = time.time()
 
-vocab, single_counts, pair_counts, scores = process_util.counts_and_score_table(docs, window=args.window, norm_pmi=args.norm, json_file=args.output, docs_label=args.input, verbose=args.verbose)
+vocab, single_counts, pair_counts, scores = process_util.counts_and_score_table(docs, window=args.window, norm_pmi=args.norm, json_file=args.output, docs_label=args.input, cutoff=args.cutoff, verbose=args.verbose)
 
 tf = time.time()
 

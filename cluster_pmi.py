@@ -33,6 +33,7 @@ optional_args.add_argument('--n_clusters', required=False, default=10, type=int,
 optional_args.add_argument('--merges_per_iter', required=False, default=10, type=int, help='Number of greedy merges to perform per iteration (default=10)')
 optional_args.add_argument('--n_top_words', required=False, default=20, help='Number of top words in each cluster to display (default=20)')
 optional_args.add_argument('--tree_html', required=False, help='Filename for HTML output representing merge tree')
+optional_args.add_argument('--verbose', required=False, action='store_true', help='Verbose mode')
 
 help_arg.add_argument('-h', '--help', action='help')
 
@@ -257,8 +258,8 @@ def greedy_merge(pdict, clusters, metric, target_num_clusters, merges_per_iter, 
         candidates.sort(key=lambda(x): x[1], reverse=False)
 
     # Initialize merge tree, assumes one word per cluster
-    merge_tree = clusters.copy()
-    merge_id_next = len(clusters)
+    merge_tree = {k: v[0] for k,v in clusters.iteritems()}
+    id_next = len(clusters)
 
     iteration = 0
     merges_executed = 0
@@ -287,7 +288,7 @@ def greedy_merge(pdict, clusters, metric, target_num_clusters, merges_per_iter, 
             # Merge top scoring cluster pair
             wlist1 = clusters[cm1]
             wlist2 = clusters[cm2]
-            clusters[merge_id_next] = wlist1 + wlist2
+            clusters[id_next] = wlist1 + wlist2
 
             # Delete clusters that were merged
             del clusters[cm1]
@@ -296,16 +297,16 @@ def greedy_merge(pdict, clusters, metric, target_num_clusters, merges_per_iter, 
             merges_executed += 1
 
             # Update merge tree
-            merge_tree[merge_id_next] = (cm1, cm2)
+            merge_tree[id_next] = (cm1, cm2)
 
             # Increment merge_id
-            merge_id_next += 1
+            id_next += 1
 
             # Delete candidates containing the clusters we just merged
             old_cand_size = len(candidates)
             candidates = filter(lambda c: c[0][0] != cm1 and c[0][0] != cm2 and c[0][1] != cm1 and c[0][1] != cm2, candidates)
 
-           if verbose: print "Number of deletions = %s" % (old_cand_size - len(candidates))
+            if verbose: print "Number of deletions = %s" % (old_cand_size - len(candidates))
 
         # Finish updating score table
         if cache:
@@ -503,11 +504,14 @@ def print_docs_for_pair(wi, wj):
     print "Total number of matched docs: %s" % count
 
 def print_tree_html(filename, tree):
-
+    """ Write HTML file corresponding to merge tree
+    """
     def print_tree_helper(root, node_id):
         if type(tree[root]) != tuple:
             print >>f, r'<li>',
-            print >>f, tree[root]
+            w = tree[root]
+            f.write(w.encode('utf-8'))
+            f.write('\n')
         else:
             print >>f, r'<li>',
             print >>f, node_id
@@ -522,6 +526,7 @@ def print_tree_html(filename, tree):
     print >>f, r'<!DOCTYPE html>'
     print >>f, r'<html>'
     print >>f, r'<head>'
+    print >>f, r'<meta http-equiv="Content-Type" content="text/html; charset=UTF-8">'
     print >>f, r'<title>Cluster merge tree</title>'
     print >>f, r'</head>'
     print >>f, r'<body>'
@@ -532,10 +537,31 @@ def print_tree_html(filename, tree):
     print >>f, r'</html>'
     f.close()
 
+def generate_word_cluster_map(tree):
+    """ Generate mapping from words to clusters
+
+        Returns dictionary where each key is word with value being a list
+        of cluster ids
+    """
+    def map_helper(root, ids):
+        if type(tree[root]) != tuple:
+            word = tree[root]
+            wc_map[word] = ids
+        else:
+            # Print left child
+            map_helper(tree[root][0], ids + [ids[-1] + '0'])
+            # Print right child
+            map_helper(tree[root][1], ids + [ids[-1] + '1'])
+
+    wc_map = {}
+    map_helper(max(tree.keys()), ['0'])
+
+    return wc_map
+
 ##### MAIN SCRIPT ######
 
 # Read vocab, co-occurence, score data from file
-print "Read JSON documents file..."
+if args.verbose: print "Read JSON documents file..."
 
 with open(args.input) as input_file:
     data = json.load(input_file)
@@ -551,18 +577,19 @@ for flat_key, value in data['pair_counts'].iteritems():
     doc_pair_counts[tuple_key] = value
 
 # Calculate clusters
-print "Target number of clusters = %s, using %s merges per iteration" % (args.n_clusters, args.merges_per_iter)
-print "Calculating clusters..."
+if args.verbose:
+    print "Target number of clusters = %s, using %s merges per iteration" % (args.n_clusters, args.merges_per_iter)
+    print "Calculating clusters..."
 
 ti = time.time()
 clusters, merge_tree  = calculate_clusters(pmi_lookup, doc_single_counts, vocabulary, args.metric, args.n_clusters, use_freq_words=False, num_freq_words=500, merges_per_iter=args.merges_per_iter, verbose=False)
 tf = time.time()
 
-print "\nUsed %s metric, clusters found:" % args.metric
+if args.verbose: print "\nUsed %s metric, clusters found:" % args.metric
 
 clusters_by_count, clusters_by_pmi = print_clusters(pmi_lookup, doc_single_counts, clusters, args.n_top_words)
 
-print "Clustering took %s seconds for %d merges per iteration" % (tf-ti, args.merges_per_iter)
+if args.verbose: print "Clustering took %s seconds for %d merges per iteration" % (tf-ti, args.merges_per_iter)
 
 # Construct dictionary containing clusters and parameters
 results = {}
@@ -574,6 +601,15 @@ results['metric'] = args.metric
 results['n_clusters'] = args.n_clusters
 results['merges_per_iter'] = args.merges_per_iter
 results['merge_tree'] = merge_tree
+
+word_cluster_map = generate_word_cluster_map(merge_tree)
+
+cluster_ids = set()
+for ids in word_cluster_map.itervalues():
+    cluster_ids = cluster_ids.union(set(ids))
+
+results['word_cluster_map'] = word_cluster_map
+results['cluster_ids'] = sorted(list(cluster_ids))
 
 # Write results dictionary to JSON file
 with open(args.output, 'w') as output_file:
@@ -588,3 +624,22 @@ if args.tree_html:
 #print_docs_for_pair('american', 'out')
 
 #print "\nNumber of negative PMIs = %s, fraction of negative PMIs = %s" % num_neg_pmi(pmi_dict)
+
+# Print tree test cases
+
+#test_tree1 = {}
+#test_tree1[2] = (0,1)
+#test_tree1[0] = 'left'
+#test_tree1[1] = 'right'
+
+#test_tree2 = {}
+
+#test_tree2[0] = 'a'
+#test_tree2[1] = 'b'
+#test_tree2[2] = (0,1)
+#test_tree2[3] = 'c'
+#test_tree2[4] = 'd'
+#test_tree2[5] = (3,4)
+#test_tree2[6] = (2,5)
+
+#print_tree_html('test.html', merge_tree)
