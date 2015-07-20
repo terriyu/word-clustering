@@ -582,7 +582,9 @@ if args.verbose:
     print "Calculating clusters..."
 
 ti = time.time()
+
 clusters, merge_tree  = calculate_clusters(pmi_lookup, doc_single_counts, vocabulary, args.metric, args.n_clusters, use_freq_words=False, num_freq_words=500, merges_per_iter=args.merges_per_iter, verbose=False)
+
 tf = time.time()
 
 if args.verbose: print "\nUsed %s metric, clusters found:" % args.metric
