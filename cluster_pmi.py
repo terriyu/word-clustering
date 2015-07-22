@@ -3,7 +3,7 @@ import numpy as np
 import argparse, json, time
 
 # Example usage:
-# python cluster_pmi.py --metric 'mean' -n_clusters 5 --merges_per_iter 10 --n_top_words 10 --mallet_file word_topic_counts.txt
+# python cluster_pmi.py --metric 'mean' -n_clusters 5 --merges_per_batch 10 --n_top_words 10 --mallet_file word_topic_counts.txt
 
 ##### GLOBAL CONSTANTS #####
 
@@ -30,7 +30,7 @@ required_args.add_argument('--input', required=True, help='Input JSON file conta
 required_args.add_argument('--output', required=True, help='Output JSON file containing clusters')
 
 optional_args.add_argument('--n_clusters', required=False, default=10, type=int, help='Target number of clusters (default=10)')
-optional_args.add_argument('--merges_per_iter', required=False, default=10, type=int, help='Number of greedy merges to perform per iteration (default=10)')
+optional_args.add_argument('--merges_per_batch', required=False, default=10, type=int, help='Number of greedy merges to perform per iteration (default=10)')
 optional_args.add_argument('--n_top_words', required=False, default=20, help='Number of top words in each cluster to display (default=20)')
 optional_args.add_argument('--tree_html', required=False, help='Filename for HTML output representing merge tree')
 optional_args.add_argument('--verbose', required=False, action='store_true', help='Verbose mode')
@@ -241,7 +241,7 @@ def generate_score_table(pdict, clusters, metric):
 
     return candidates
 
-def greedy_merge(pdict, clusters, metric, target_num_clusters, merges_per_iter, cache, verbose):
+def greedy_merge(pdict, clusters, metric, target_num_clusters, merges_per_batch, cache, verbose):
     """ Performs greedy merging of clusters iteratively until target number of clusters is reached
 
         Does specified number of merges per iteration and uses caching if flag is set to True
@@ -265,10 +265,10 @@ def greedy_merge(pdict, clusters, metric, target_num_clusters, merges_per_iter, 
     merges_executed = 0
     while len(clusters) > 1:
         iteration += 1
-        # ids from before merges in the upcoming iteration
-        old_ids = set(clusters.keys())
-        # Perform specified number of merges per iteration
-        for k in range(merges_per_iter):
+        # ids from before merges in the upcoming batch
+        ids_before_batch = set(clusters.keys())
+        # Perform specified number of merges per batch
+        for k in range(merges_per_batch):
             if verbose: print "Number of clusters = %s, number of candidates = %s" % (len(clusters), len(candidates))
 
             if len(clusters) == target_num_clusters:
@@ -312,7 +312,7 @@ def greedy_merge(pdict, clusters, metric, target_num_clusters, merges_per_iter, 
         if cache:
             ids = sorted(clusters.keys())
             # old ids remaining after merges
-            remain_old_ids = old_ids.intersection(set(ids))
+            remain_old_ids = ids_before_batch.intersection(set(ids))
             if remain_old_ids:
                 # Find newest "old" cluster id
                 last_id = max(remain_old_ids)
@@ -341,7 +341,7 @@ def greedy_merge(pdict, clusters, metric, target_num_clusters, merges_per_iter, 
 
     return clusters_target, merge_tree
 
-def calculate_clusters(pdict, single_counts, vocab, metric, target_num_clusters, use_freq_words=False, num_freq_words=100, merges_per_iter=1, cache=True, verbose=False):
+def calculate_clusters(pdict, single_counts, vocab, metric, target_num_clusters, use_freq_words=False, num_freq_words=100, merges_per_batch=1, cache=True, verbose=False):
     """ Calculate target number of clusters using specified metric and greedy approaches
 
         Options:
@@ -376,7 +376,7 @@ def calculate_clusters(pdict, single_counts, vocab, metric, target_num_clusters,
     else:
         for idx, v_word in enumerate(vocab):
             clusters[idx] = [v_word]
-        clusters, merge_tree = greedy_merge(pdict, clusters, metric, target_num_clusters, merges_per_iter, cache, verbose)
+        clusters, merge_tree = greedy_merge(pdict, clusters, metric, target_num_clusters, merges_per_batch, cache, verbose)
 
     return clusters, merge_tree
 
@@ -578,12 +578,12 @@ for flat_key, value in data['pair_counts'].iteritems():
 
 # Calculate clusters
 if args.verbose:
-    print "Target number of clusters = %s, using %s merges per iteration" % (args.n_clusters, args.merges_per_iter)
+    print "Target number of clusters = %s, using %s merges per iteration" % (args.n_clusters, args.merges_per_batch)
     print "Calculating clusters..."
 
 ti = time.time()
 
-clusters, merge_tree  = calculate_clusters(pmi_lookup, doc_single_counts, vocabulary, args.metric, args.n_clusters, use_freq_words=False, num_freq_words=500, merges_per_iter=args.merges_per_iter, verbose=False)
+clusters, merge_tree  = calculate_clusters(pmi_lookup, doc_single_counts, vocabulary, args.metric, args.n_clusters, use_freq_words=False, num_freq_words=500, merges_per_batch=args.merges_per_batch, verbose=False)
 
 tf = time.time()
 
@@ -591,7 +591,7 @@ if args.verbose: print "\nUsed %s metric, clusters found:" % args.metric
 
 clusters_by_count, clusters_by_pmi = print_clusters(pmi_lookup, doc_single_counts, clusters, args.n_top_words)
 
-if args.verbose: print "Clustering took %s seconds for %d merges per iteration" % (tf-ti, args.merges_per_iter)
+if args.verbose: print "Clustering took %s seconds for %d merges per iteration" % (tf-ti, args.merges_per_batch)
 
 # Construct dictionary containing clusters and parameters
 results = {}
@@ -601,7 +601,7 @@ results['clusters_by_count'] = clusters_by_count
 results['clusters_by_pmi'] = clusters_by_pmi
 results['metric'] = args.metric
 results['n_clusters'] = args.n_clusters
-results['merges_per_iter'] = args.merges_per_iter
+results['merges_per_batch'] = args.merges_per_batch
 results['merge_tree'] = merge_tree
 
 word_cluster_map = generate_word_cluster_map(merge_tree)
