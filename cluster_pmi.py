@@ -267,6 +267,10 @@ def greedy_merge(pdict, clusters, metric, target_num_clusters, merges_per_batch,
         iteration += 1
         # ids from before merges in the upcoming batch
         ids_before_batch = set(clusters.keys())
+        # ids corresponding to clusters merged during batch
+        ids_merged = set()
+        # current index for best score (start at beginning of sorted list)
+        cur_idx = 0
         # Perform specified number of merges per batch
         for k in range(merges_per_batch):
             if verbose: print "Number of clusters = %s, number of candidates = %s" % (len(clusters), len(candidates))
@@ -276,11 +280,21 @@ def greedy_merge(pdict, clusters, metric, target_num_clusters, merges_per_batch,
                 clusters_target = [c for c in clusters.itervalues()]
 
             if (len(candidates) == 0):
-                if verbose: print "Ran out of candidate merges, breaking out of loop"
+                if verbose: print "Ran out of candidate merges (empty candidate list), breaking out of loop"
                 break
 
             # Extract first candidate merge
-            (cm1, cm2), merge_score  = candidates[0]
+            # Look for first valid candidate (doesn't contain any ids_merged)
+            found_valid_cand = False
+            while not found_valid_cand and cur_idx < len(candidates):
+                (cm1, cm2), merge_score = candidates[cur_idx]
+                cur_idx += 1
+                if not ids_merged.intersection([cm1, cm2]):
+                    found_valid_cand = True
+
+            if not found_valid_cand:
+                print "Ran out of candidate merges (no valid ids), breaking out of loop"
+                break
 
             print "[iteration = %s, total merges = %s, num of clusters = %s] Merging clusters (%s, %s) with score %s " % (iteration, merges_executed, len(clusters), cm1, cm2, merge_score)
             if verbose: print clusters[cm1], clusters[cm2]
@@ -289,6 +303,7 @@ def greedy_merge(pdict, clusters, metric, target_num_clusters, merges_per_batch,
             wlist1 = clusters[cm1]
             wlist2 = clusters[cm2]
             clusters[id_next] = wlist1 + wlist2
+            ids_merged.update([cm1, cm2])
 
             # Delete clusters that were merged
             del clusters[cm1]
@@ -302,14 +317,14 @@ def greedy_merge(pdict, clusters, metric, target_num_clusters, merges_per_batch,
             # Increment merge_id
             id_next += 1
 
+        # Finish updating score table
+        if cache:
             # Delete candidates containing the clusters we just merged
             old_cand_size = len(candidates)
-            candidates = filter(lambda c: c[0][0] != cm1 and c[0][0] != cm2 and c[0][1] != cm1 and c[0][1] != cm2, candidates)
+            candidates = [c for c in candidates if not ids_merged.intersection(c[0])]
 
             if verbose: print "Number of deletions = %s" % (old_cand_size - len(candidates))
 
-        # Finish updating score table
-        if cache:
             ids = sorted(clusters.keys())
             # old ids remaining after merges
             remain_old_ids = ids_before_batch.intersection(set(ids))
