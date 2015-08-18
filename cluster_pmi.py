@@ -1,9 +1,15 @@
 from __future__ import division
+from collections import defaultdict
+from operator import itemgetter
 import numpy as np
 import argparse, json, time
+import matplotlib.pyplot as plt
 
 # Example usage:
 # python cluster_pmi.py --metric 'mean' -n_clusters 5 --merges_per_batch 10 --n_top_words 10 --mallet_file word_topic_counts.txt
+
+# Set random seed for LSH random projections
+np.random.seed(42)
 
 ##### GLOBAL CONSTANTS #####
 
@@ -17,6 +23,12 @@ TOP_WORDS_CUTOFF = 10
 #       will work on disjunction more later
 VALID_METRICS = set(['min', 'max', 'mean', 'geometric', 'harmonic'])
 
+# Clustering methods available
+# 'hac' = basic hierachical agglomerative clustering + HAC
+# 'most_freq_words' = uses Percy Liang heuristic of clustering with most frequent words + HAC
+# 'lsh' = Locality Sensitive Hashing (LSH) + HAC
+VALID_METHODS = set(['hac', 'most_freq_words', 'lsh'])
+
 ##### PARSER #####
 
 parser = argparse.ArgumentParser(description='Cluster documents using PMI-based metrics.', add_help=False)
@@ -26,6 +38,7 @@ optional_args = parser.add_argument_group('Optional arguments')
 help_arg = parser.add_argument_group('Help')
 
 required_args.add_argument('--metric', required=True, choices=VALID_METRICS, help='Metric to use for clustering linkage')
+required_args.add_argument('--method', required=True, choices=VALID_METHODS, help='Method to use for clustering: "hac", "most_freq_words", "lsh"')
 required_args.add_argument('--input', required=True, help='Input JSON file containing pre-computed data, including co-occurence counts and score table')
 required_args.add_argument('--output', required=True, help='Output JSON file containing clusters')
 
@@ -223,11 +236,11 @@ def score_clusters(pdict, metric, c1, c2):
 
     return score
 
-def generate_score_table(pdict, clusters, metric):
+def generate_score_table_hac(pdict, clusters, metric):
     """ Generate score table for all pairwise combinations in clusters,
-        according to metric
+        according to metric, for hierachical agglomerative clustering method
 
-        Score table has form ([i,j], score) where i and j are cluster indices
+        Score table has form ((i,j), score) where i and j are cluster indices
     """
     ids = clusters.keys()
     cluster_size = len(ids)
@@ -237,25 +250,242 @@ def generate_score_table(pdict, clusters, metric):
     for i in range(cluster_size):
         for j in range(i+1,cluster_size):
             score = score_clusters(pdict, metric, clusters[ids[i]], clusters[ids[j]])
-            candidates.append(((ids[i], ids[j]), score))
+            # Sort cluster IDs in ascending order
+            pair = tuple(sorted([ids[i], ids[j]]))
+            candidates.append((pair, score))
 
     return candidates
 
-def greedy_merge(pdict, clusters, metric, target_num_clusters, merges_per_batch, cache, verbose):
-    """ Performs greedy merging of clusters iteratively until target number of clusters is reached
+def generate_score_table_lsh(pdict, clusters, buckets, metric):
+    """ Generate score table for all pairwise combinations in clusters,
+        according to metric, for hierachical agglomerative clustering method
 
-        Does specified number of merges per iteration and uses caching if flag is set to True
+        Score table has form ((i,j), score) where i and j are cluster indices
     """
-    # Generate initial score table, which we call "candidates"
-    candidates = generate_score_table(pdict, clusters, metric)
+    candidates = []
+    for cids_set in buckets.itervalues():
+        # Convert set to list, so we can order the entries and iterate over them
+        cids = list(cids_set)
+        num_clusters_in_bucket = len(cids)
+        if num_clusters_in_bucket > 1:
+            for i in range(num_clusters_in_bucket):
+                for j in range(i+1,num_clusters_in_bucket):
+                    score = score_clusters(pdict, metric, clusters[cids[i]], clusters[cids[j]])
+                    # Sort cluster IDs in ascending order
+                    pair = tuple(sorted([cids[i], cids[j]]))
+                    candidates.append((pair, score))
 
-    # Sort score table
+    return candidates
+
+def sort_score_table(score_table, metric, stable):
+    """ Sort score table
+
+        Stable sort: For most metrics, if two candidates have the same score,
+                     the one with the higher cluster id pair comes first
+                     If the metric is 'min', it's the opposite
+    """
     if metric != 'min':
         # Sort so that highest scores are at beginning of list
-        candidates.sort(key=lambda(x): x[1], reverse=True)
+        if stable:
+            score_table.sort(key=itemgetter(1, 0), reverse=True)
+        else:
+            score_table.sort(key=itemgetter(1), reverse=True)
     else:
         # Sort so that lowest scores are at beginning of list
-        candidates.sort(key=lambda(x): x[1], reverse=False)
+        if stable:
+            score_table.sort(key=itemgetter(1, 0), reverse=False)
+        else:
+            score_table.sort(key=itemgetter(1), reverse=False)
+
+    return score_table
+
+def compress_buckets(max_buckets):
+    """ In progress
+    """
+    return
+
+def lsh_merge(pdict, doc_id_vecs, num_docs, clusters, metric, target_num_clusters, merges_per_batch, stable, cache, verbose):
+    """ Performs LSH-based hierarchical agglomerative clustering (HAC)
+
+        Does specified number of merges per iteration and uses caching if flag is set to True
+        Has option to do stable sorting (which takes a little longer)
+    """
+    max_bits = 1
+
+    # Generate random projection matrix
+    proj_mat = np.random.rand(max_bits, num_docs) - 0.5
+
+    # Calculate buckets
+    max_buckets = defaultdict(set)
+    map_cid_to_hash = defaultdict(set)
+    for cid, c in clusters.iteritems():
+        proj_hash = np.zeros(max_bits, dtype=np.uint8)
+        proj_hash[np.dot(proj_mat, doc_id_vecs[c[0]]) > 0] = 1
+        proj_hash_to_str = ''.join([str(x) for x in proj_hash.tolist()])
+        max_buckets[proj_hash_to_str].add(cid)
+        map_cid_to_hash[cid].add(proj_hash_to_str)
+
+    # FIXME
+    buckets = max_buckets.copy()
+
+    #first_key = hash_table.keys()[1]
+    #print first_key
+    #print hash_table[first_key]
+
+    #y = [len(x) for x in hash_table.values()]
+    #print y
+
+    #values = [x for x in hash_table.values() if len(x) > 1]
+    #print [[clusters[z][0] for z in y] for y in values]
+
+    #plt.hist(np.array(y))
+    #plt.show()
+
+    # Generate initial score table, which we call "candidates"
+    candidates = generate_score_table_lsh(pdict, clusters, max_buckets, metric)
+
+    # Sort score table
+    candidates = sort_score_table(candidates, metric, stable)
+
+    #print candidates[:10]
+    #print len(candidates)
+
+    # Initialize merge tree, assumes one word per cluster
+    merge_tree = {k: v[0] for k,v in clusters.iteritems()}
+    id_next = len(clusters)
+
+    flag = False
+    iteration = 0
+    merges_executed = 0
+    while len(clusters) > 1:
+        max_bucket_dist = np.array([len(x) for x in max_buckets.values()])
+        max_bucket_dist_pairs = np.array([int(len(x)*(len(x)-1)/2) for x in max_buckets.values()])
+        print "Average bucket size = %s" % max_bucket_dist.mean()
+        print "Number of pairwise comparisons = %s" % max_bucket_dist_pairs.sum()
+
+        iteration += 1
+        # ids from before merges in the upcoming batch
+        ids_before_batch = set(clusters.keys())
+        # ids corresponding to clusters merged during batch
+        ids_merged = set()
+        # current index for best score (start at beginning of sorted list)
+        cur_idx = 0
+
+        # Perform specified number of merges per batch
+        for k in range(merges_per_batch):
+
+
+            if verbose: print "Number of clusters = %s, number of candidates = %s" % (len(clusters), len(candidates))
+
+            if len(clusters) == target_num_clusters:
+                # Target number of clusters reached, save clusters
+                clusters_target = [c for c in clusters.itervalues()]
+
+            if (len(candidates) == 0):
+                if verbose: print "Ran out of candidate merges (empty candidate list), breaking out of loop"
+                break
+
+            # Extract first candidate merge
+            # Look for first valid candidate (doesn't contain any ids_merged)
+            found_valid_cand = False
+            while not found_valid_cand and cur_idx < len(candidates):
+                (cm1, cm2), merge_score = candidates[cur_idx]
+                cur_idx += 1
+                if not ids_merged.intersection([cm1, cm2]):
+                    found_valid_cand = True
+
+            if not found_valid_cand:
+                print "Ran out of candidate merges (no valid ids), breaking out of loop"
+                # FIXME
+                max_buckets['0'] = max_buckets['0'].union(max_buckets['1'])
+                del max_buckets['1']
+                for cid in map_cid_to_hash:
+                    map_cid_to_hash[cid] = set(['0'])
+                flag = True
+                break
+
+            print "[iteration = %s, total merges = %s, num of clusters = %s] Merging clusters (%s, %s) with score %s " % (iteration, merges_executed, len(clusters), cm1, cm2, merge_score)
+            if verbose: print clusters[cm1], clusters[cm2]
+
+            # Merge top scoring cluster pair
+            wlist1 = clusters[cm1]
+            wlist2 = clusters[cm2]
+            clusters[id_next] = wlist1 + wlist2
+            ids_merged.update([cm1, cm2])
+
+            # Delete clusters that were merged
+            del clusters[cm1]
+            del clusters[cm2]
+
+            # Update hash tables
+            for h in map_cid_to_hash[cm1]:
+                max_buckets[h].remove(cm1)
+                max_buckets[h].add(id_next)
+
+            for h in map_cid_to_hash[cm2]:
+                max_buckets[h].remove(cm2)
+                max_buckets[h].add(id_next)
+
+            map_cid_to_hash[id_next] = map_cid_to_hash[cm1].union(map_cid_to_hash[cm2])
+            del map_cid_to_hash[cm1]
+            del map_cid_to_hash[cm2]
+
+            merges_executed += 1
+
+            # Update merge tree
+            merge_tree[id_next] = (cm1, cm2)
+
+            # Increment merge_id
+            id_next += 1
+
+        # Finish updating score table
+        if cache and not flag:
+            # Delete candidates containing the clusters we just merged
+            old_cand_size = len(candidates)
+            candidates = [c for c in candidates if not ids_merged.intersection(c[0])]
+
+            if verbose: print "Number of deletions = %s" % (old_cand_size - len(candidates))
+
+            # Add new candidates corresponding to newly merged clusters
+
+            # old ids remaining after merges
+            ids = set(sorted(clusters.keys()))
+            remain_old_ids = ids_before_batch.intersection(ids)
+            # new ids before last batch of merges
+            new_ids = ids.difference(ids_before_batch)
+
+            pairs_computed = set()
+            for cid_new in new_ids:
+                for h in map_cid_to_hash[cid_new]:
+                    for cid in max_buckets[h]:
+                        if ((cid in remain_old_ids) or (cid > cid_new)):
+                            if tuple(sorted([cid, cid_new])) not in pairs_computed:
+                                score = score_clusters(pdict, metric, clusters[cid], clusters[cid_new])
+                                # Sort cluster IDs in ascending order
+                                pair = tuple(sorted([cid, cid_new]))
+                                candidates.append((pair, score))
+                                pairs_computed.add(pair)
+
+        else:
+            # No caching, re-generate entire score table
+            candidates = generate_score_table_lsh(pdict, clusters, max_buckets, metric)
+
+        # Sort score table
+        candidates = sort_score_table(candidates, metric, stable)
+
+    return clusters_target, merge_tree
+
+def hac_merge(pdict, clusters, metric, target_num_clusters, merges_per_batch, stable, cache, verbose):
+    """ Performs hierarchical agglomerative clustering (HAC)
+
+        Does specified number of merges per iteration and uses caching if flag is set to True
+        Has option to do stable sorting (which takes a little longer)
+    """
+    # Generate initial score table, which we call "candidates"
+    candidates = generate_score_table_hac(pdict, clusters, metric)
+
+    # Sort score table
+    candidates = sort_score_table(candidates, metric, stable)
 
     # Initialize merge tree, assumes one word per cluster
     merge_tree = {k: v[0] for k,v in clusters.iteritems()}
@@ -325,6 +555,7 @@ def greedy_merge(pdict, clusters, metric, target_num_clusters, merges_per_batch,
 
             if verbose: print "Number of deletions = %s" % (old_cand_size - len(candidates))
 
+            # Add new candidates corresponding to newly merged clusters
             ids = sorted(clusters.keys())
             # old ids remaining after merges
             remain_old_ids = ids_before_batch.intersection(set(ids))
@@ -341,22 +572,19 @@ def greedy_merge(pdict, clusters, metric, target_num_clusters, merges_per_batch,
             for i in range(last_idx+1, len(ids)):
                 for j in range(i):
                     score = score_clusters(pdict, metric, clusters[ids[j]], clusters[ids[i]])
-                    candidates.append(((ids[j], ids[i]), score))
+                    # Sort cluster IDs in ascending order
+                    pair = tuple(sorted([ids[j], ids[i]]))
+                    candidates.append((pair, score))
         else:
             # No caching, re-generate entire score table
-            candidates = generate_score_table(pdict, [c for c in clusters.itervalues()], metric)
+            candidates = generate_score_table_hac(pdict, clusters, metric)
 
         # Sort score table
-        if metric != 'min':
-            # Sort so that highest scores are at beginning of list
-            candidates.sort(key=lambda(x): x[1], reverse=True)
-        else:
-            # Sort so that lowest scores are at beginning of list
-            candidates.sort(key=lambda(x): x[1], reverse=False)
+        candidates = sort_score_table(candidates, metric, stable)
 
     return clusters_target, merge_tree
 
-def calculate_clusters(pdict, single_counts, vocab, metric, target_num_clusters, use_freq_words=False, num_freq_words=100, merges_per_batch=1, cache=True, verbose=False):
+def calculate_clusters(pdict, single_counts, vocab, metric, target_num_clusters, method='hac', stable=True, doc_id_sparse=None, num_docs=None, num_freq_words=100, merges_per_batch=1, cache=True, verbose=False):
     """ Calculate target number of clusters using specified metric and greedy approaches
 
         Options:
@@ -372,7 +600,7 @@ def calculate_clusters(pdict, single_counts, vocab, metric, target_num_clusters,
     # value being list of vocab words
     clusters = {}
 
-    if use_freq_words:
+    if method == 'most_freq_words':
         if num_freq_words > len(vocab):
             print "Error: parameter for num_freq_words > vocabulary size"
             return
@@ -388,10 +616,23 @@ def calculate_clusters(pdict, single_counts, vocab, metric, target_num_clusters,
             if v_word not in top_freq_words:
                 leftover.append(v_word)
         clusters.append(leftover)
-    else:
+    elif method == 'lsh':
+        # Convert sparse doc id vectors to dense ones
+        doc_id_dense = {}
+        for word in doc_id_sparse:
+            doc_id_vec = np.zeros(num_docs, dtype=np.uint8)
+            doc_id_vec[doc_id_sparse[word]] = 1
+            doc_id_dense[word] = doc_id_vec
+            #doc_id_dense[word] = np.packbits(doc_id_vec)
+        # Generate initial clusters
         for idx, v_word in enumerate(vocab):
             clusters[idx] = [v_word]
-        clusters, merge_tree = greedy_merge(pdict, clusters, metric, target_num_clusters, merges_per_batch, cache, verbose)
+        clusters, merge_tree = lsh_merge(pdict, doc_id_dense, num_docs, clusters, metric, target_num_clusters, merges_per_batch, stable=True, cache=True, verbose=False)
+    elif method == 'hac':
+        # Generate initial clusters
+        for idx, v_word in enumerate(vocab):
+            clusters[idx] = [v_word]
+        clusters, merge_tree = hac_merge(pdict, clusters, metric, target_num_clusters, merges_per_batch, stable, cache, verbose)
 
     return clusters, merge_tree
 
@@ -584,6 +825,8 @@ with open(args.input) as input_file:
 vocabulary = data['vocab']
 doc_single_counts = data['single_counts']
 pmi_lookup = data['score_table']
+doc_id_sparse = data['doc_id_sparse']
+num_docs = data['num_docs']
 
 # Need to convert flattened keys back to tuple keys
 doc_pair_counts = {}
@@ -598,7 +841,10 @@ if args.verbose:
 
 ti = time.time()
 
-clusters, merge_tree  = calculate_clusters(pmi_lookup, doc_single_counts, vocabulary, args.metric, args.n_clusters, use_freq_words=False, num_freq_words=500, merges_per_batch=args.merges_per_batch, verbose=False)
+if args.method == 'hac':
+    clusters, merge_tree  = calculate_clusters(pmi_lookup, doc_single_counts, vocabulary, args.metric, args.n_clusters, method=args.method, merges_per_batch=args.merges_per_batch, verbose=False)
+elif args.method == 'lsh':
+    clusters, merge_tree  = calculate_clusters(pmi_lookup, doc_single_counts, vocabulary, args.metric, args.n_clusters, method=args.method, merges_per_batch=args.merges_per_batch, doc_id_sparse=doc_id_sparse, num_docs=num_docs, verbose=False)
 
 tf = time.time()
 

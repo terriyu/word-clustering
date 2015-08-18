@@ -5,7 +5,7 @@
 from __future__ import division
 from collections import defaultdict
 import numpy as np
-import json, nltk, re, string
+import nltk, re, string
 
 ##### GLOBAL CONSTANTS #####
 
@@ -14,7 +14,7 @@ import json, nltk, re, string
 STOP_WORD_FILE = 'stop_lists/mallet_stop.txt'
 
 # Punctuation to remove from documents
-PUNCT_REMOVE_TOKEN = set(string.punctuation) 
+PUNCT_REMOVE_TOKEN = set(string.punctuation)
 PUNCT_REMOVE_REGEX = set([re.compile(re.escape(y)) for y in string.punctuation])
 
 # Miscellaneous words to remove from documents
@@ -45,7 +45,7 @@ def clean_tokenize(text, stop_words=stop_words_default):
     """
     # Replace underscore and dash with space
     text = re.sub(r'_', ' ', text)
-    text = re.sub(r'-', ' ', text)    
+    text = re.sub(r'-', ' ', text)
     # Remove colon
     text = re.sub(r':', '', text)
     # Remove capitalization
@@ -122,10 +122,10 @@ def pmi_boolbool(single_counts, pair_counts, N_docs, wi, wj, normalized=False):
     else:
         return None
 
-##### CO-OCCURENCE COUNTS #####
+##### STATS: CO-OCCURENCE COUNTS, PMI, DOC ID VECTORS #####
 
-def counts_and_score_table(docs, window=None, norm_pmi=False, json_file=False, docs_label=None, cutoff=VOCAB_CUTOFF, verbose=True):
-    
+def precompute_stats(docs, window=None, norm_pmi=False, cutoff=VOCAB_CUTOFF, verbose=True):
+
     # Set of words in vocabulary
     vocabulary = set()
 
@@ -146,33 +146,40 @@ def counts_and_score_table(docs, window=None, norm_pmi=False, json_file=False, d
     if verbose:
         print "Computing single counts..."
 
-    for tokens in docs:    
+    for tokens in docs:
         words = list(set(tokens))
         vocabulary |= set(words)
-    
+
         doc_len = len(words)
         for i in range(doc_len):
             wi = words[i]
             doc_single_counts[wi] += 1
-    
+
     if verbose:
         print "Removing low frequency words from vocabulary..."
-    
+
     vocabulary = {w for w in vocabulary if doc_single_counts[w] > cutoff}
-    
+
     if verbose:
         print "The vocabulary size is %s words" % len(vocabulary)
         if window:
             print "Computing pair counts with window size = %d" % window
         else:
             print "Computing pair counts for documents..."
-    
+
+    # Doc id vectors for each word in vocabulary
+    # Uses sparse representation where each value is a list of doc ids
+    # where the word occurs
+    doc_id_sparse = defaultdict(list)
+
     if window:
-        for tokens in docs:
+        for doc_id, tokens in enumerate(docs):
             words = list(set(tokens))
             doc_len = len(words)
             for i in range(doc_len):
                 wi = words[i]
+                if wi in vocabulary:
+                    doc_id_sparse[wi].append(doc_id)
                 w_min = max(i - window, 0)
                 w_max = min(i + window, doc_len)
                 for j in range(w_min, w_max):
@@ -182,23 +189,25 @@ def counts_and_score_table(docs, window=None, norm_pmi=False, json_file=False, d
                             pair = tuple(sorted([wi, wj]))
                             doc_pair_counts[pair] += 1
     else:
-        for tokens in docs:
+        for doc_id, tokens in enumerate(docs):
             words = list(set(tokens))
             doc_len = len(words)
             for i in range(doc_len):
                 wi = words[i]
+                if wi in vocabulary:
+                    doc_id_sparse[wi].append(doc_id)
                 for j in range(i+1,doc_len):
                     wj = words[j]
                     if wi in vocabulary and wj in vocabulary:
                         pair = tuple(sorted([wi, wj]))
                         doc_pair_counts[pair] += 1
-    
+
     if verbose:
         if norm_pmi:
             print "Calculating normalized PMI..."
         else:
             print "Calculating PMI..."
-    
+
     # Iterate only through pairs with non-zero counts
     for pair in doc_pair_counts:
         wi, wj = pair
@@ -208,18 +217,4 @@ def counts_and_score_table(docs, window=None, norm_pmi=False, json_file=False, d
             # Duplicate PMI for reverse ordering of wi, wj for convenience
             pmi_lookup[wj][wi] = pmi
 
-    # Write JSON file 
-    if json_file:
-        if verbose:
-            print "Writing vocabulary, counts, and score table to JSON file %s ..." % json_file
-        # Need to flatten tuple keys, so that pair counts dictionary is serializable
-        doc_pair_counts_flat_keys = {}
-        for key, value in doc_pair_counts.iteritems():
-            doc_pair_counts_flat_keys[','.join(key)] = value
-        # Convert vocabulary set to list, so that it is serializable
-        results_dict = {'docs_label': docs_label, 'norm_pmi': norm_pmi, 'window': window, 'vocab': list(vocabulary), 'single_counts': doc_single_counts, 'pair_counts': doc_pair_counts_flat_keys, 'score_table': pmi_lookup}
-        # Write dictionary to JSON file
-        with open(json_file, 'w') as f:
-            json.dump(results_dict, f)
-
-    return vocabulary, doc_single_counts, doc_pair_counts, pmi_lookup
+    return vocabulary, doc_single_counts, doc_pair_counts, pmi_lookup, doc_id_sparse
