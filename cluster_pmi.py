@@ -3,10 +3,18 @@ from collections import defaultdict
 from operator import itemgetter
 import numpy as np
 import argparse, json, time
-import matplotlib.pyplot as plt
+
+# Set up terminal to handle unicode printing
+# But only if we are in the terminal, not if we are in IPython
+import sys, codecs
+try:
+    __IPYTHON__
+except NameError:
+    sys.stdout = codecs.getwriter('utf8')(sys.stdout)
+    sys.stderr = codecs.getwriter('utf8')(sys.stderr)
 
 # Example usage:
-# python cluster_pmi.py --metric 'mean' -n_clusters 5 --merges_per_batch 10 --n_top_words 10 --mallet_file word_topic_counts.txt
+# python cluster_pmi.py --metric mean --method lsh --input sotu_small_test_pmi.json --merges_per_batch 10 --output temp.json --tree_html temp_tree.html --verbose
 
 # Set random seed for LSH random projections
 np.random.seed(42)
@@ -258,7 +266,7 @@ def generate_score_table_hac(pdict, clusters, metric):
 
 def generate_score_table_lsh(pdict, clusters, buckets, metric):
     """ Generate score table for all pairwise combinations in clusters,
-        according to metric, for hierachical agglomerative clustering method
+        according to metric, for locality sensitive hashing (LSH) method
 
         Score table has form ((i,j), score) where i and j are cluster indices
     """
@@ -299,10 +307,75 @@ def sort_score_table(score_table, metric, stable):
 
     return score_table
 
-def compress_buckets(max_buckets):
-    """ In progress
+def compute_buckets(num_bits, proj_mat, clusters, doc_id_vecs):
+    """ Hash clusters into LSH buckets
     """
-    return
+    buckets = defaultdict(set)
+    cid_to_hash = defaultdict(set)
+    for cid, c in clusters.iteritems():
+        proj_hash = np.zeros(num_bits, dtype=np.uint8)
+        proj_hash[np.dot(proj_mat[:num_bits,:], doc_id_vecs[c[0]]) > 0] = 1
+        proj_hash_to_str = ''.join([str(x) for x in proj_hash.tolist()])
+        buckets[proj_hash_to_str].add(cid)
+        cid_to_hash[cid].add(proj_hash_to_str)
+
+    return cid_to_hash, buckets
+
+def compute_bucket_stats(buckets):
+    """ Compute statistics corresponding to LSH bucket distribution
+    """
+    bucket_dist = np.array([len(x) for x in buckets.values() if len(x) > 1], dtype=np.uint64)
+    comparisons_dist = np.array([x*(x-1)//2 for x in bucket_dist])
+
+    median_bucket_size = np.median(bucket_dist)
+    mean_bucket_size = np.mean(bucket_dist)
+    num_pairwise_comparisons = np.sum(comparisons_dist)
+
+    return median_bucket_size, mean_bucket_size, num_pairwise_comparisons
+
+def next_buckets(num_bits, proj_mat, clusters, doc_id_vecs, buckets, cid_to_hash, criterion_function):
+    """ Return next set of buckets that satisfy the given criterion
+    """
+    # Calculate bucket statistics
+    median_bucket_size, mean_bucket_size, num_pairwise_comparisons = compute_bucket_stats(buckets)
+
+    print "Number of bits in LSH hash = %d" % num_bits
+    print "Median bucket size = %s, mean bucket size = %s, number of pairwise comparisons = %d" % (median_bucket_size, mean_bucket_size, num_pairwise_comparisons)
+
+    bucket_size_criterion = criterion_function(median_bucket_size, mean_bucket_size, num_pairwise_comparisons)
+
+    while not bucket_size_criterion and num_bits >= 1:
+        if num_bits == 1:
+            # Put all clusters in one giant bucket
+            buckets['0'] = buckets['0'].union(buckets['1'])
+            del buckets['1']
+
+            for cid in cid_to_hash:
+                cid_to_hash[cid] = set(['0'])
+
+            num_bits = 0
+
+            b = len(buckets['0'])
+            print "Number of bits in LSH hash = %d" % num_bits
+            print "Median bucket size = %s, mean bucket size = %s, number of pairwise comparisons = %d" % (b, b, b*(b-1)/2)
+
+            break
+        else:
+            # Reduce number of bits in hash
+            num_bits -= 1
+
+        # Calculate buckets
+        cid_to_hash, buckets = compute_buckets(num_bits, proj_mat, clusters, doc_id_vecs)
+
+        # Calculate bucket statistics
+        median_bucket_size, mean_bucket_size, num_pairwise_comparisons = compute_bucket_stats(buckets)
+
+        print "Number of bits in LSH hash = %d" % num_bits
+        print "Median bucket size = %s, mean bucket size = %s, number of pairwise comparisons = %d" % (median_bucket_size, mean_bucket_size, num_pairwise_comparisons)
+
+        bucket_size_criterion = criterion_function(median_bucket_size, mean_bucket_size, num_pairwise_comparisons)
+
+    return num_bits, cid_to_hash, buckets
 
 def lsh_merge(pdict, doc_id_vecs, num_docs, clusters, metric, target_num_clusters, merges_per_batch, stable, cache, verbose):
     """ Performs LSH-based hierarchical agglomerative clustering (HAC)
@@ -310,59 +383,57 @@ def lsh_merge(pdict, doc_id_vecs, num_docs, clusters, metric, target_num_cluster
         Does specified number of merges per iteration and uses caching if flag is set to True
         Has option to do stable sorting (which takes a little longer)
     """
-    max_bits = 1
+    def criterion(stat):
+        # Criteria for LSH buckets
+        min_pairwise_comparisons = 100000
+        min_avg_bucket_size = 5.0
+        min_median_bucket_size = 4.4
+
+        def median_criterion(mean, median, num_pairs):
+            return median >= min_median_bucket_size
+        def mean_criterion(mean, median, num_pairs):
+            return mean >= min_avg_bucket_size
+        def num_comparisons_criterion(mean, median, num_pairs):
+            return num_pairs >= min_pairwise_comparisons
+
+        if stat == 'median':
+            return median_criterion
+        elif stat == 'mean':
+            return mean_criterion
+        elif stat == 'num_pairs':
+            return num_comparisons_criterion
+        else:
+            print "Error: no criterion specified"
+
+    # Set criterion function
+    bucket_criterion_function = criterion('num_pairs')
+
+    # To start, number of buckets approximately equal to number of documents
+    max_bits = np.ceil(np.log2(num_docs))
 
     # Generate random projection matrix
     proj_mat = np.random.rand(max_bits, num_docs) - 0.5
 
+    num_bits = max_bits
+
     # Calculate buckets
-    max_buckets = defaultdict(set)
-    map_cid_to_hash = defaultdict(set)
-    for cid, c in clusters.iteritems():
-        proj_hash = np.zeros(max_bits, dtype=np.uint8)
-        proj_hash[np.dot(proj_mat, doc_id_vecs[c[0]]) > 0] = 1
-        proj_hash_to_str = ''.join([str(x) for x in proj_hash.tolist()])
-        max_buckets[proj_hash_to_str].add(cid)
-        map_cid_to_hash[cid].add(proj_hash_to_str)
+    cid_to_hash, buckets = compute_buckets(num_bits, proj_mat, clusters, doc_id_vecs)
 
-    # FIXME
-    buckets = max_buckets.copy()
-
-    #first_key = hash_table.keys()[1]
-    #print first_key
-    #print hash_table[first_key]
-
-    #y = [len(x) for x in hash_table.values()]
-    #print y
-
-    #values = [x for x in hash_table.values() if len(x) > 1]
-    #print [[clusters[z][0] for z in y] for y in values]
-
-    #plt.hist(np.array(y))
-    #plt.show()
+    num_bits, cid_to_hash, buckets = next_buckets(num_bits, proj_mat, clusters, doc_id_vecs, buckets, cid_to_hash, bucket_criterion_function)
 
     # Generate initial score table, which we call "candidates"
-    candidates = generate_score_table_lsh(pdict, clusters, max_buckets, metric)
+    candidates = generate_score_table_lsh(pdict, clusters, buckets, metric)
 
     # Sort score table
     candidates = sort_score_table(candidates, metric, stable)
-
-    #print candidates[:10]
-    #print len(candidates)
 
     # Initialize merge tree, assumes one word per cluster
     merge_tree = {k: v[0] for k,v in clusters.iteritems()}
     id_next = len(clusters)
 
-    flag = False
     iteration = 0
     merges_executed = 0
     while len(clusters) > 1:
-        max_bucket_dist = np.array([len(x) for x in max_buckets.values()])
-        max_bucket_dist_pairs = np.array([int(len(x)*(len(x)-1)/2) for x in max_buckets.values()])
-        print "Average bucket size = %s" % max_bucket_dist.mean()
-        print "Number of pairwise comparisons = %s" % max_bucket_dist_pairs.sum()
-
         iteration += 1
         # ids from before merges in the upcoming batch
         ids_before_batch = set(clusters.keys())
@@ -371,9 +442,9 @@ def lsh_merge(pdict, doc_id_vecs, num_docs, clusters, metric, target_num_cluster
         # current index for best score (start at beginning of sorted list)
         cur_idx = 0
 
+        print "Performing batch of merges"
         # Perform specified number of merges per batch
         for k in range(merges_per_batch):
-
 
             if verbose: print "Number of clusters = %s, number of candidates = %s" % (len(clusters), len(candidates))
 
@@ -396,12 +467,6 @@ def lsh_merge(pdict, doc_id_vecs, num_docs, clusters, metric, target_num_cluster
 
             if not found_valid_cand:
                 print "Ran out of candidate merges (no valid ids), breaking out of loop"
-                # FIXME
-                max_buckets['0'] = max_buckets['0'].union(max_buckets['1'])
-                del max_buckets['1']
-                for cid in map_cid_to_hash:
-                    map_cid_to_hash[cid] = set(['0'])
-                flag = True
                 break
 
             print "[iteration = %s, total merges = %s, num of clusters = %s] Merging clusters (%s, %s) with score %s " % (iteration, merges_executed, len(clusters), cm1, cm2, merge_score)
@@ -418,17 +483,17 @@ def lsh_merge(pdict, doc_id_vecs, num_docs, clusters, metric, target_num_cluster
             del clusters[cm2]
 
             # Update hash tables
-            for h in map_cid_to_hash[cm1]:
-                max_buckets[h].remove(cm1)
-                max_buckets[h].add(id_next)
+            for h in cid_to_hash[cm1]:
+                buckets[h].remove(cm1)
+                buckets[h].add(id_next)
 
-            for h in map_cid_to_hash[cm2]:
-                max_buckets[h].remove(cm2)
-                max_buckets[h].add(id_next)
+            for h in cid_to_hash[cm2]:
+                buckets[h].remove(cm2)
+                buckets[h].add(id_next)
 
-            map_cid_to_hash[id_next] = map_cid_to_hash[cm1].union(map_cid_to_hash[cm2])
-            del map_cid_to_hash[cm1]
-            del map_cid_to_hash[cm2]
+            cid_to_hash[id_next] = cid_to_hash[cm1].union(cid_to_hash[cm2])
+            del cid_to_hash[cm1]
+            del cid_to_hash[cm2]
 
             merges_executed += 1
 
@@ -438,8 +503,14 @@ def lsh_merge(pdict, doc_id_vecs, num_docs, clusters, metric, target_num_cluster
             # Increment merge_id
             id_next += 1
 
+        # Calculate next set of buckets
+        print "Compute next set of candidates"
+        old_num_bits = num_bits
+        num_bits, cid_to_hash, buckets = next_buckets(num_bits, proj_mat, clusters, doc_id_vecs, buckets, cid_to_hash, bucket_criterion_function)
+
         # Finish updating score table
-        if cache and not flag:
+        if cache and (old_num_bits == num_bits):
+            print "Deleting candidates..."
             # Delete candidates containing the clusters we just merged
             old_cand_size = len(candidates)
             candidates = [c for c in candidates if not ids_merged.intersection(c[0])]
@@ -448,16 +519,21 @@ def lsh_merge(pdict, doc_id_vecs, num_docs, clusters, metric, target_num_cluster
 
             # Add new candidates corresponding to newly merged clusters
 
+            print "Adding new candidates..."
             # old ids remaining after merges
             ids = set(sorted(clusters.keys()))
             remain_old_ids = ids_before_batch.intersection(ids)
             # new ids before last batch of merges
             new_ids = ids.difference(ids_before_batch)
 
+            total_cluster_size = 0
+            num_pmi_scores_computed = 0
             pairs_computed = set()
+
+            ti_add = time.time()
             for cid_new in new_ids:
-                for h in map_cid_to_hash[cid_new]:
-                    for cid in max_buckets[h]:
+                for h in cid_to_hash[cid_new]:
+                    for cid in buckets[h]:
                         if ((cid in remain_old_ids) or (cid > cid_new)):
                             if tuple(sorted([cid, cid_new])) not in pairs_computed:
                                 score = score_clusters(pdict, metric, clusters[cid], clusters[cid_new])
@@ -465,10 +541,20 @@ def lsh_merge(pdict, doc_id_vecs, num_docs, clusters, metric, target_num_cluster
                                 pair = tuple(sorted([cid, cid_new]))
                                 candidates.append((pair, score))
                                 pairs_computed.add(pair)
+                                l1 = len(clusters[cid])
+                                l2 = len(clusters[cid_new])
+                                num_pmi_scores_computed += l1*(l1-1)/2 + l2*(l2-1)/2
+                                total_cluster_size += l1 + l2
+
+            tf_add = time.time()
+
+            print "Finished adding candidates, added %d candidates, computed %d PMI scores" % (len(pairs_computed), num_pmi_scores_computed)
+            if len(pairs_computed) > 0:
+                print "Avg cluster size = %s, avg time per PMI score computed = %s microsec" % ((float(total_cluster_size)/(len(pairs_computed)*2)), (tf_add-ti_add)/num_pmi_scores_computed*1e6)
 
         else:
             # No caching, re-generate entire score table
-            candidates = generate_score_table_lsh(pdict, clusters, max_buckets, metric)
+            candidates = generate_score_table_lsh(pdict, clusters, buckets, metric)
 
         # Sort score table
         candidates = sort_score_table(candidates, metric, stable)
@@ -678,32 +764,37 @@ def print_clusters(pdict, single_counts, clusters, first_n_words):
         Finally, return sorted versions of the clusters,
         by single count and PMI
     """
+    # Sort clusters so largest clusters come first
+    clusters.sort(key=lambda x: len(x), reverse=True)
+
     clusters_by_count = []
     clusters_by_pmi = []
 
-    print "Words sorted by single count frequency"
+    print "\nWords sorted by single count frequency"
     for idx, c in enumerate(clusters):
         # Sort words in cluster by single count frequency
         clusters_by_count.append(sorted(c, key=lambda w: single_counts[w], reverse=True))
-        print "Cluster %s (%d words)- " % (idx+1, len(c)),
-        print clusters_by_count[idx]
+        print "\nCluster %s (%d words)- " % (idx+1, len(c)),
+        for w in clusters_by_count[idx]: print w,
 
-    print "Words sorted by mean PMI"
+    print "\n\nWords sorted by mean PMI"
     for idx, c in enumerate(clusters):
         # Sort words in cluster by mean PMI
         clusters_by_pmi.append(sorted(c, key=lambda w: mean_ppmi_of_word_in_cluster(pdict, w, c), reverse=True))
-        print "Cluster %s (%d words) - " % (idx+1, len(c)),
-        print clusters_by_pmi[idx]
+        print "\nCluster %s (%d words) - " % (idx+1, len(c)),
+        for w in clusters_by_pmi[idx]: print w,
 
-    print "Top %s words by single count frequency" % first_n_words
+    print "\n\nTop %s words by single count frequency" % first_n_words
     for idx, c in enumerate(clusters_by_count):
-        print "Cluster %s (%d words) - " % (idx+1, len(c)),
-        print clusters_by_count[idx][:first_n_words]
+        print "\nCluster %s (%d words) - " % (idx+1, len(c)),
+        for w in clusters_by_count[idx][:first_n_words]: print w,
 
-    print "Top %s words in clusters by PMI" % first_n_words
+    print "\n\nTop %s words in clusters by PMI" % first_n_words
     for idx, c in enumerate(clusters_by_pmi):
-        print "Cluster %s (%d words) - " % (idx+1, len(c)),
-        print clusters_by_pmi[idx][:first_n_words]
+        print "\nCluster %s (%d words) - " % (idx+1, len(c)),
+        for w in clusters_by_pmi[idx][:first_n_words]: print w,
+
+    print "\n"
 
     return clusters_by_count, clusters_by_pmi
 
