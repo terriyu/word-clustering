@@ -10,6 +10,7 @@ import sys, codecs
 try:
     __IPYTHON__
 except NameError:
+    # If you run this code in IPython, the prompt becomes garbled!!
     sys.stdout = codecs.getwriter('utf8')(sys.stdout)
     sys.stderr = codecs.getwriter('utf8')(sys.stderr)
 
@@ -271,6 +272,7 @@ def generate_score_table_lsh(pdict, clusters, buckets, metric):
         Score table has form ((i,j), score) where i and j are cluster indices
     """
     candidates = []
+    pairs_computed = set()
     for cids_set in buckets.itervalues():
         # Convert set to list, so we can order the entries and iterate over them
         cids = list(cids_set)
@@ -278,10 +280,12 @@ def generate_score_table_lsh(pdict, clusters, buckets, metric):
         if num_clusters_in_bucket > 1:
             for i in range(num_clusters_in_bucket):
                 for j in range(i+1,num_clusters_in_bucket):
-                    score = score_clusters(pdict, metric, clusters[cids[i]], clusters[cids[j]])
-                    # Sort cluster IDs in ascending order
-                    pair = tuple(sorted([cids[i], cids[j]]))
-                    candidates.append((pair, score))
+                    if not pairs_computed.intersection([cids[i], cids[j]]):
+                        score = score_clusters(pdict, metric, clusters[cids[i]], clusters[cids[j]])
+                        # Sort cluster IDs in ascending order
+                        pair = tuple(sorted([cids[i], cids[j]]))
+                        candidates.append((pair, score))
+                        pairs_computed.add(pair)
 
     return candidates
 
@@ -313,11 +317,12 @@ def compute_buckets(num_bits, proj_mat, clusters, doc_id_vecs):
     buckets = defaultdict(set)
     cid_to_hash = defaultdict(set)
     for cid, c in clusters.iteritems():
-        proj_hash = np.zeros(num_bits, dtype=np.uint8)
-        proj_hash[np.dot(proj_mat[:num_bits,:], doc_id_vecs[c[0]]) > 0] = 1
-        proj_hash_to_str = ''.join([str(x) for x in proj_hash.tolist()])
-        buckets[proj_hash_to_str].add(cid)
-        cid_to_hash[cid].add(proj_hash_to_str)
+        for w in c:
+            proj_hash = np.zeros(num_bits, dtype=np.uint8)
+            proj_hash[np.dot(proj_mat[:num_bits,:], doc_id_vecs[w]) > 0] = 1
+            proj_hash_to_str = ''.join([str(x) for x in proj_hash.tolist()])
+            buckets[proj_hash_to_str].add(cid)
+            cid_to_hash[cid].add(proj_hash_to_str)
 
     return cid_to_hash, buckets
 
@@ -385,7 +390,7 @@ def lsh_merge(pdict, doc_id_vecs, num_docs, clusters, metric, target_num_cluster
     """
     def criterion(stat):
         # Criteria for LSH buckets
-        min_pairwise_comparisons = 100000
+        min_pairwise_comparisons = 400000
         min_avg_bucket_size = 5.0
         min_median_bucket_size = 4.4
 
