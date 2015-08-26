@@ -84,7 +84,7 @@ def max_single_pmi_score(pdict, wlist1, wlist2):
     return max_pmi
 
 def min_single_pmi_score(pdict, wlist1, wlist2):
-    """ Calculate mnimum PMI score among all word pairs
+    """ Calculate minimum PMI score among all word pairs
         in two word lists, given pre-computed PMI dictionary
 
         - If there is no PMI defined for any of the word pairs,
@@ -254,6 +254,8 @@ def generate_score_table_hac(pdict, clusters, metric):
     """
     ids = clusters.keys()
     cluster_size = len(ids)
+
+    # List of cluster id pairs and corresponding scores
     candidates = []
 
     # Calculate initial score table
@@ -272,8 +274,11 @@ def generate_score_table_lsh(pdict, clusters, buckets, metric):
 
         Score table has form ((i,j), score) where i and j are cluster indices
     """
+    # List of cluster id pairs and corresponding scores
     candidates = []
+    # Keep track of which cluster id pairs have already had scores computed
     pairs_computed = set()
+
     for cids_set in buckets.itervalues():
         # Convert set to list, so we can order the entries and iterate over them
         cids = list(cids_set)
@@ -303,14 +308,18 @@ def sort_score_table(score_table, metric, stable):
     if metric != 'min':
         # Sort so that highest scores are at beginning of list
         if stable:
+            # Sort by score, then by cluster id pair
             score_table.sort(key=itemgetter(1, 0), reverse=True)
         else:
+            # Only sort by score
             score_table.sort(key=itemgetter(1), reverse=True)
     else:
         # Sort so that lowest scores are at beginning of list
         if stable:
+            # Sort by score, then by cluster id pair
             score_table.sort(key=itemgetter(1, 0), reverse=False)
         else:
+            # Only sort by score
             score_table.sort(key=itemgetter(1), reverse=False)
 
     return score_table
@@ -318,27 +327,50 @@ def sort_score_table(score_table, metric, stable):
 def compute_buckets(num_bits, proj_mat, clusters, doc_id_vecs):
     """ Hash clusters into LSH buckets
 
+        The feature vector hashed is the doc id vector for a word in the
+        cluster.
+
         This method takes a conservative approach where for a given cluster,
         its cluster ID is placed in any bucket corresponding to the hash of
-        any word in the cluster.  Thus, a cluster ID can be in multiple buckets.
+        any word in the cluster.  Thus, a cluster ID can be in multiple
+        buckets.
+
+        Note this method computes a new set of buckets from scratch and does
+        not use caching or compression.
     """
+    # LSH buckets
     buckets = defaultdict(set)
+    # Convenient lookup table -- tells us set of buckets where each
+    # cluster id is located
     cid_to_hash = defaultdict(set)
     for cid, c in clusters.iteritems():
         # Iterate over all words in the cluster
         for w in c:
+            # Compute random projections
             proj_hash = np.zeros(num_bits, dtype=np.uint8)
             proj_hash[np.dot(proj_mat[:num_bits,:], doc_id_vecs[w]) > 0] = 1
-            proj_hash_to_str = ''.join([str(x) for x in proj_hash.tolist()])
-            buckets[proj_hash_to_str].add(cid)
-            cid_to_hash[cid].add(proj_hash_to_str)
+            # Convert hash from array to bitstring
+            proj_hash_str = ''.join([str(x) for x in proj_hash.tolist()])
+            # Update buckets and cluster id-to-hash mapping
+            buckets[proj_hash_str].add(cid)
+            cid_to_hash[cid].add(proj_hash_str)
 
     return cid_to_hash, buckets
 
 def compute_buckets_disjunction(num_bits, proj_mat, clusters, doc_id_vecs):
     """ Hash clusters into LSH buckets
+
+        Here the feature vector hashed is the disjunction of the doc id vectors
+        corresponding to the words in the cluster. Specifically, the
+        disjunction is calculated by ORing together all the doc id vectors.
+
+        Note this method computes a new set of buckets from scratch and does
+        not use caching or compression.
     """
+    # LSH buckets
     buckets = defaultdict(set)
+    # Convenient lookup table -- tells us set of buckets where each
+    # cluster id is located
     cid_to_hash = defaultdict(set)
     for cid, c in clusters.iteritems():
         # OR the doc id vectors for each word in cluster
@@ -348,27 +380,42 @@ def compute_buckets_disjunction(num_bits, proj_mat, clusters, doc_id_vecs):
         # Calculate hash from random projections of OR'd doc id vector
         proj_hash = np.zeros(num_bits, dtype=np.uint8)
         proj_hash[np.dot(proj_mat[:num_bits,:], or_doc_id_vec) > 0] = 1
-        proj_hash_to_str = ''.join([str(x) for x in proj_hash.tolist()])
-        buckets[proj_hash_to_str].add(cid)
-        cid_to_hash[cid].add(proj_hash_to_str)
+        # Convert hash to bitstring
+        proj_hash_str = ''.join([str(x) for x in proj_hash.tolist()])
+        # Update buckets and cluster id-to-hash mapping
+        buckets[proj_hash_str].add(cid)
+        cid_to_hash[cid].add(proj_hash_str)
 
     return cid_to_hash, buckets
 
 def compress_buckets(num_bits, max_buckets):
-    """ Compress clusters into fewer buckets
-        Reduce hash to fewer bits
-    """
-    new_buckets = defaultdict(set)
-    new_cid_to_hash = defauldict(set)
-    for hash_str, cids_set in max_buckets.iteritems():
-        hash_array = np.array(list(hash_str))
-        np.random.shuffle(hash_array)
-        new_hash = ''.join(list(hash_array[:num_bits]))
-        new_buckets[new_hash].update(cids_set)
-        for cid in cids_set:
-            new_cid_to_hash[cid].add(new_hash)
+    """ Compress clusters into fewer buckets, reduce hash to fewer bits
 
-    return new_cid_to_hash, new_buckets
+        Uses the cached data for buckets calculated with (user-defined)
+        maximum number of bits (max_buckets)
+
+        Randomly selects num_bits from the hash for each bucket in order to
+        compress the buckets
+    """
+    # Compressed LSH buckets
+    comp_buckets = defaultdict(set)
+    # Lookup table for cluster ids, corresponding to compressed buckets
+    comp_cid_to_hash = defaultdict(set)
+    for hash_str, cids_set in max_buckets.iteritems():
+        # Convert hash to NumPy array
+        hash_array = np.array(list(hash_str), dtype=np.uint8)
+        # Permute hash
+        # Note: random.shuffle() seems faster than random.choice()
+        np.random.shuffle(hash_array)
+        # Randomly extract num_bits from hash and convert to bitstring
+        # This is the compressed hash bitstring
+        comp_hash_str = ''.join(list(hash_array[:num_bits]))
+        # Update buckets and cluster id-to-hash mapping
+        comp_buckets[comp_hash_str].update(cids_set)
+        for cid in cids_set:
+            comp_cid_to_hash[cid].add(comp_hash_str)
+
+    return comp_cid_to_hash, comp_buckets
 
 def bucket_stats(buckets):
     """ Compute statistics corresponding to LSH bucket distribution
@@ -376,23 +423,24 @@ def bucket_stats(buckets):
     bucket_dist = np.array([len(x) for x in buckets.values() if len(x) > 1], dtype=np.uint64)
     comparisons_dist = np.array([x*(x-1)//2 for x in bucket_dist], dtype=np.uint64)
 
-    # Median number of cluster in buckets
-    median_bucket_size = np.median(bucket_dist)
     # Mean number of cluster per bucket
     mean_bucket_size = np.mean(bucket_dist)
+    # Median number of cluster in buckets
+    median_bucket_size = np.median(bucket_dist)
     # Number of pairwise cluster comparisons corresponding to buckets
     num_pairwise_comparisons = np.sum(comparisons_dist)
 
-    return median_bucket_size, mean_bucket_size, num_pairwise_comparisons
+    # Return stats in alphabetical order by variable name
+    return mean_bucket_size, median_bucket_size, num_pairwise_comparisons
 
 def next_buckets(num_bits, proj_mat, clusters, doc_id_vecs, buckets, cid_to_hash, criterion_function, use_disjunction=False):
     """ Return next set of buckets that satisfy the given criterion
     """
     # Calculate bucket statistics
-    median_bucket_size, mean_bucket_size, num_pairwise_comparisons = bucket_stats(buckets)
+    mean_bucket_size, median_bucket_size, num_pairwise_comparisons = bucket_stats(buckets)
 
     print "Number of bits in LSH hash = %d" % num_bits
-    print "Median bucket size = %s, mean bucket size = %s, number of pairwise comparisons = %d" % (median_bucket_size, mean_bucket_size, num_pairwise_comparisons)
+    print "Mean bucket size = %s, median bucket size = %s, number of pairwise comparisons = %d" % (mean_bucket_size, median_bucket_size, num_pairwise_comparisons)
 
     bucket_size_criterion = criterion_function(median_bucket_size, mean_bucket_size, num_pairwise_comparisons)
 
@@ -423,11 +471,10 @@ def next_buckets(num_bits, proj_mat, clusters, doc_id_vecs, buckets, cid_to_hash
             cid_to_hash, buckets = compute_buckets(num_bits, proj_mat, clusters, doc_id_vecs)
 
         # Calculate bucket statistics
-        median_bucket_size, mean_bucket_size, num_pairwise_comparisons = bucket_stats(buckets)
+        mean_bucket_size, median_bucket_size, num_pairwise_comparisons = bucket_stats(buckets)
 
         print "Number of bits in LSH hash = %d" % num_bits
-        print "Median bucket size = %s, mean bucket size = %s, number of pairwise comparisons = %d" % (median_bucket_size, mean_bucket_size, num_pairwise_comparisons)
-
+        print "Mean bucket size = %s, median bucket size = %s, number of pairwise comparisons = %d" % (mean_bucket_size, median_bucket_size, num_pairwise_comparisons)
         bucket_size_criterion = criterion_function(median_bucket_size, mean_bucket_size, num_pairwise_comparisons)
 
     return num_bits, cid_to_hash, buckets
@@ -439,26 +486,31 @@ def lsh_merge(pdict, doc_id_vecs, num_docs, clusters, metric, target_num_cluster
         Has option to do stable sorting (which takes a little longer)
     """
     def criterion(stat):
-        # Criteria for LSH buckets
-        min_pairwise_comparisons = 100000
-        min_avg_bucket_size = 5.0
-        min_median_bucket_size = 4.4
+        """ Returns a function that checks if LSH buckets meet a particular
+            criterion based on a statistic of the bucket distribution
 
+            stat is the name of the statistic desired
+        """
+        # Criteria for LSH buckets
+        min_mean_bucket_size = 2.5
+        min_median_bucket_size = 4.4
+        min_pairwise_comparisons = 10000
+
+        def mean_criterion(mean, median, num_pairs):
+            return mean >= min_mean_bucket_size
         def median_criterion(mean, median, num_pairs):
             return median >= min_median_bucket_size
-        def mean_criterion(mean, median, num_pairs):
-            return mean >= min_avg_bucket_size
         def num_comparisons_criterion(mean, median, num_pairs):
             return num_pairs >= min_pairwise_comparisons
 
-        if stat == 'median':
-            return median_criterion
-        elif stat == 'mean':
+        if stat == 'mean':
             return mean_criterion
+        elif stat == 'median':
+            return median_criterion
         elif stat == 'num_pairs':
             return num_comparisons_criterion
         else:
-            print "Error: no criterion specified"
+            print "Error: no known criterion specified"
 
     # Set criterion function
     bucket_criterion_function = criterion('num_pairs')
@@ -469,24 +521,29 @@ def lsh_merge(pdict, doc_id_vecs, num_docs, clusters, metric, target_num_cluster
     # Generate random projection matrix
     proj_mat = np.random.rand(max_bits, num_docs) - 0.5
 
-    num_bits = max_bits
-
-    # Calculate buckets
+    # Calculate buckets corresponding to maximum number of hash bits
     if use_disjunction:
-        cid_to_hash, buckets = compute_buckets_disjunction(num_bits, proj_mat, clusters, doc_id_vecs)
+        cid_to_hash, max_buckets = compute_buckets_disjunction(max_bits, proj_mat, clusters, doc_id_vecs)
     else:
-        cid_to_hash, buckets = compute_buckets(num_bits, proj_mat, clusters, doc_id_vecs)
+        cid_to_hash, max_buckets = compute_buckets(max_bits, proj_mat, clusters, doc_id_vecs)
+
+    # Buckets for generating score table
+    buckets = max_buckets.copy()
+    # Number of hash bits corresponding to variable "buckets"
+    num_bits = max_bits
 
     num_bits, cid_to_hash, buckets = next_buckets(num_bits, proj_mat, clusters, doc_id_vecs, buckets, cid_to_hash, bucket_criterion_function, use_disjunction)
 
     # Generate initial score table, which we call "candidates"
     candidates = generate_score_table_lsh(pdict, clusters, buckets, metric)
+    if verbose: print "Number of candidates = %s" % (len(candidates))
 
     # Sort score table
     candidates = sort_score_table(candidates, metric, stable)
 
     # Initialize merge tree, assumes one word per cluster
     merge_tree = {k: v[0] for k,v in clusters.iteritems()}
+    # Counter for next cluster id
     id_next = len(clusters)
 
     iteration = 0
@@ -507,7 +564,7 @@ def lsh_merge(pdict, doc_id_vecs, num_docs, clusters, metric, target_num_cluster
             if verbose: print "Number of clusters = %s, number of candidates = %s" % (len(clusters), len(candidates))
 
             if len(clusters) == target_num_clusters:
-                # Target number of clusters reached, save clusters
+                # Target number of clusters reached, save clusters in a list
                 clusters_target = [c for c in clusters.itervalues()]
 
             if (len(candidates) == 0):
@@ -541,15 +598,43 @@ def lsh_merge(pdict, doc_id_vecs, num_docs, clusters, metric, target_num_cluster
             del clusters[cm2]
 
             # Update hash tables
+
+            # Remove ids for clusters that have been merged
+            # If we are using the conservative method, the new cluster
+            # inherits the hashes from the two clusters that were merged to
+            # form it
             for h in cid_to_hash[cm1]:
                 buckets[h].remove(cm1)
-                buckets[h].add(id_next)
+                if not use_disjunction:
+                    buckets[h].add(id_next)
 
             for h in cid_to_hash[cm2]:
                 buckets[h].remove(cm2)
-                buckets[h].add(id_next)
+                if not use_disjunction:
+                    buckets[h].add(id_next)
 
-            cid_to_hash[id_next] = cid_to_hash[cm1].union(cid_to_hash[cm2])
+            # For disjunction method, hash the new cluster and update the
+            # buckets / cluster ID lookup table accordingly
+            if use_disjunction:
+                or_doc_id_vec = np.zeros(num_docs, dtype=np.uint8)
+                for w in clusters[id_next]:
+                    or_doc_id_vec = np.logical_or(or_doc_id_vec, doc_id_vecs[w])
+                # Calculate hash from random projections of OR'd doc id vector
+                proj_hash = np.zeros(num_bits, dtype=np.uint8)
+                proj_hash[np.dot(proj_mat[:num_bits,:], or_doc_id_vec) > 0] = 1
+                # Convert hash to bitstring
+                proj_hash_str = ''.join([str(x) for x in proj_hash.tolist()])
+                # Update buckets and cluster id-to-hash mapping
+                buckets[proj_hash_str].add(id_next)
+                cid_to_hash[id_next].add(proj_hash_str)
+            else:
+                # For the conservative method, the new cluster simply inherits
+                # all the hashes from two clusters that were merged to form it,
+                # so update the cluster id lookup table accordingly
+                cid_to_hash[id_next] = cid_to_hash[cm1].union(cid_to_hash[cm2])
+
+            # Delete cluster ids corresponding to merged clusters from
+            # cluster id lookup table
             del cid_to_hash[cm1]
             del cid_to_hash[cm2]
 
@@ -563,11 +648,11 @@ def lsh_merge(pdict, doc_id_vecs, num_docs, clusters, metric, target_num_cluster
 
         # Calculate next set of buckets
         print "Compute next set of candidates"
-        old_num_bits = num_bits
+        prev_num_bits = num_bits
         num_bits, cid_to_hash, buckets = next_buckets(num_bits, proj_mat, clusters, doc_id_vecs, buckets, cid_to_hash, bucket_criterion_function, use_disjunction)
 
-        # Finish updating score table
-        if cache and (old_num_bits == num_bits):
+        # Update score table
+        if cache and (prev_num_bits == num_bits):
             print "Deleting candidates..."
             # Delete candidates containing the clusters we just merged
             old_cand_size = len(candidates)
@@ -613,6 +698,8 @@ def lsh_merge(pdict, doc_id_vecs, num_docs, clusters, metric, target_num_cluster
         else:
             # No caching, re-generate entire score table
             candidates = generate_score_table_lsh(pdict, clusters, buckets, metric)
+            if verbose: print "Number of candidates = %s" % (len(candidates))
+
 
         # Sort score table
         candidates = sort_score_table(candidates, metric, stable)
@@ -633,6 +720,7 @@ def hac_merge(pdict, clusters, metric, target_num_clusters, merges_per_batch, st
 
     # Initialize merge tree, assumes one word per cluster
     merge_tree = {k: v[0] for k,v in clusters.iteritems()}
+    # Counter for next cluster id
     id_next = len(clusters)
 
     iteration = 0
