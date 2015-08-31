@@ -59,7 +59,7 @@ optional_args.add_argument('--merges_per_batch', required=False, default=10, typ
 optional_args.add_argument('--n_top_words', required=False, default=20, help='Number of top words in each cluster to display (default=20)')
 optional_args.add_argument('--tree_html', required=False, help='Filename for HTML output representing merge tree')
 optional_args.add_argument('--disjunction', required=False, default=False, action='store_true', help='Use disjunction for LSH clustering')
-optional_args.add_argument('--random', required=False, default=False, action='store_true', help='Use random data for testing')
+optional_args.add_argument('--random', required=False, default=False, action='store_true', help='Use random data for testing LSH clustering')
 optional_args.add_argument('--verbose', required=False, action='store_true', help='Verbose mode')
 
 help_arg.add_argument('-h', '--help', action='help')
@@ -392,6 +392,43 @@ def compute_buckets_disjunction(num_bits, proj_mat, clusters, doc_id_vecs):
 
     return cid_to_hash, buckets
 
+def cache_buckets(max_bits, proj_mat, clusters, doc_id_vecs):
+    """ Compute LSH buckets for number of bits from 1 to max_bits and
+        cache in dictionary
+    """
+    # Calculate buckets corresponding to maximum number of hash bits
+    if use_disjunction:
+        max_cid_to_hash, max_buckets = compute_buckets_disjunction(max_bits, proj_mat, clusters, doc_id_vecs)
+    else:
+        max_cid_to_hash, max_buckets = compute_buckets(max_bits, proj_mat, clusters, doc_id_vecs)
+
+    buckets_cached = {}
+    cid_to_hash_cached = {}
+    buckets_cached[max_bits] = max_buckets
+    cid_to_hash_cached[max_bits] = max_cid_to_hash
+
+    for i in range(max_bits-1, 0, -1):
+        reduced_buckets = defaultdict(set)
+        reduced_cid_to_hash = defaultdict(set)
+        for hash_str, cids_set in max_buckets.iteritems():
+            # Convert hash to NumPy array
+            hash_array = np.array(list(hash_str), dtype=np.uint8)
+            # Permute hash
+            # Note: random.shuffle() seems faster than random.choice()
+            np.random.shuffle(hash_array)
+            # Randomly extract num_bits from hash and convert to bitstring
+            # This is the compressed hash bitstring
+            hash_array = hash_array[:i]
+            reduced_hash_str = ''.join([str(x) for x in hash_array.tolist()])
+            # Update buckets and cluster id-to-hash mapping
+            reduced_buckets[reduced_hash_str].update(cids_set)
+            for cid in cids_set:
+                reduced_cid_to_hash[cid].add(reduced_hash_str)
+        buckets_cached[i] = reduced_buckets
+        cid_to_hash_cached[i] = reduced_cid_to_hash
+
+    return cid_to_hash_cached, buckets_cached
+
 def compress_buckets(num_bits, max_buckets):
     """ Compress clusters into fewer buckets, reduce hash to fewer bits
 
@@ -400,6 +437,8 @@ def compress_buckets(num_bits, max_buckets):
 
         Randomly selects num_bits from the hash for each bucket in order to
         compress the buckets
+
+        Note: this function seems to be very slow, so it's not used currently
     """
     # Compressed LSH buckets
     comp_buckets = defaultdict(set)
