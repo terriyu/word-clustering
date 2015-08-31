@@ -59,6 +59,7 @@ optional_args.add_argument('--merges_per_batch', required=False, default=10, typ
 optional_args.add_argument('--n_top_words', required=False, default=20, help='Number of top words in each cluster to display (default=20)')
 optional_args.add_argument('--tree_html', required=False, help='Filename for HTML output representing merge tree')
 optional_args.add_argument('--disjunction', required=False, default=False, action='store_true', help='Use disjunction for LSH clustering')
+optional_args.add_argument('--random', required=False, default=False, action='store_true', help='Use random data for testing')
 optional_args.add_argument('--verbose', required=False, action='store_true', help='Verbose mode')
 
 help_arg.add_argument('-h', '--help', action='help')
@@ -547,7 +548,7 @@ def lsh_merge(pdict, doc_id_vecs, num_docs, clusters, metric, target_num_cluster
     print "Bucket ids is superset of cluster ids = %s" % bucket_ids.issuperset(cluster_ids)
     print "Bucket ids is subset of cluster ids = %s" % bucket_ids.issubset(cluster_ids)
 
-    num_bits, cid_to_hash, buckets = next_buckets(num_bits, proj_mat, clusters, doc_id_vecs, cid_to_hash, bucket_criterion_function, buckets, max_buckets=None, use_disjunction=use_disjunction)
+    num_bits, cid_to_hash, buckets = next_buckets(num_bits, proj_mat, clusters, doc_id_vecs, buckets, cid_to_hash, bucket_criterion_function, use_disjunction=use_disjunction)
 
     cluster_ids = set(clusters.keys())
     bucket_ids = set()
@@ -683,7 +684,7 @@ def lsh_merge(pdict, doc_id_vecs, num_docs, clusters, metric, target_num_cluster
         prev_num_bits = num_bits
         if num_bits > 0:
             ti_next = time.time()
-            num_bits, cid_to_hash, buckets = next_buckets(num_bits, proj_mat, clusters, doc_id_vecs, cid_to_hash, bucket_criterion_function, buckets, max_buckets=None, use_disjunction=use_disjunction)
+            num_bits, cid_to_hash, buckets = next_buckets(num_bits, proj_mat, clusters, doc_id_vecs, buckets, cid_to_hash, bucket_criterion_function, use_disjunction=use_disjunction)
             tf_next = time.time()
             print "Time to calculate next buckets = %s sec" % (tf_next - ti_next)
 
@@ -893,7 +894,7 @@ def hac_merge(pdict, clusters, metric, target_num_clusters, merges_per_batch, st
 
     return clusters_target, merge_tree
 
-def calculate_clusters(pdict, single_counts, vocab, metric, target_num_clusters, method='hac', stable=True, doc_id_sparse=None, num_docs=None, num_freq_words=100, merges_per_batch=1, use_disjunction=False, cache=True, verbose=False):
+def calculate_clusters(pdict, single_counts, vocab, metric, target_num_clusters, method='hac', stable=True, doc_id_vec=None, num_docs=None, num_freq_words=100, merges_per_batch=1, use_disjunction=False, cache=True, verbose=False):
     """ Calculate target number of clusters using specified metric and greedy approaches
 
         Options:
@@ -926,17 +927,10 @@ def calculate_clusters(pdict, single_counts, vocab, metric, target_num_clusters,
                 leftover.append(v_word)
         clusters.append(leftover)
     elif method == 'lsh':
-        # Convert sparse doc id vectors to dense ones
-        doc_id_dense = {}
-        for word in doc_id_sparse:
-            doc_id_vec = np.zeros(num_docs, dtype=np.uint8)
-            doc_id_vec[doc_id_sparse[word]] = 1
-            doc_id_dense[word] = doc_id_vec
-            #doc_id_dense[word] = np.packbits(doc_id_vec)
         # Generate initial clusters
         for idx, v_word in enumerate(vocab):
             clusters[idx] = [v_word]
-        clusters, merge_tree = lsh_merge(pdict, doc_id_dense, num_docs, clusters, metric, target_num_clusters, merges_per_batch, use_disjunction, stable=True, cache=True, verbose=False)
+        clusters, merge_tree = lsh_merge(pdict, doc_id_vec, num_docs, clusters, metric, target_num_clusters, merges_per_batch, use_disjunction, stable=True, cache=True, verbose=False)
     elif method == 'hac':
         # Generate initial clusters
         for idx, v_word in enumerate(vocab):
@@ -1159,7 +1153,32 @@ if args.method == 'hac':
     clusters, merge_tree  = calculate_clusters(pmi_lookup, doc_single_counts, vocabulary, args.metric, args.n_clusters, method=args.method, merges_per_batch=args.merges_per_batch, verbose=False)
 elif args.method == 'lsh':
     if args.verbose and args.disjunction: print "Using disjunction to calculate features"
-    clusters, merge_tree  = calculate_clusters(pmi_lookup, doc_single_counts, vocabulary, args.metric, args.n_clusters, method=args.method, merges_per_batch=args.merges_per_batch, doc_id_sparse=doc_id_sparse, num_docs=num_docs, use_disjunction=args.disjunction, verbose=False)
+
+    if args.random:
+        # Replace real PMI data with random data (for testing)
+        random_dict = defaultdict(dict)
+        for k1 in pmi_lookup:
+            for k2 in pmi_lookup[k1]:
+                random_dict[k1][k2] = np.random.rand()*10
+        pdict = random_dict
+    else:
+        pdict = pmi_lookup
+
+
+    # Convert sparse doc id vectors to dense ones
+    doc_id_dense = {}
+    for word in doc_id_sparse:
+        vec = np.zeros(num_docs, dtype=np.uint8)
+
+        if args.random:
+            # Replace real doc id data with random data (for testing)
+            vec[np.random.rand(num_docs) < 0.0005] = 1
+        else:
+            vec[doc_id_sparse[word]] = 1
+
+        doc_id_dense[word] = vec
+
+    clusters, merge_tree  = calculate_clusters(pdict, doc_single_counts, vocabulary, args.metric, args.n_clusters, method=args.method, merges_per_batch=args.merges_per_batch, doc_id_vec=doc_id_dense, num_docs=num_docs, use_disjunction=args.disjunction, verbose=False)
 
 tf = time.time()
 
