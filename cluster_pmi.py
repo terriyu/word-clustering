@@ -3,6 +3,7 @@ from collections import defaultdict
 from operator import itemgetter
 import numpy as np
 import argparse, json, time
+import matplotlib.pyplot as plt
 
 # Set up terminal to handle unicode printing
 # But only if we are in the terminal, not if we are in IPython
@@ -19,6 +20,8 @@ except NameError:
 
 # Set random seed for LSH random projections
 np.random.seed(42)
+#np.random.seed(137)
+#np.random.seed(28)
 
 ##### GLOBAL CONSTANTS #####
 
@@ -401,6 +404,7 @@ def compress_buckets(num_bits, max_buckets):
     comp_buckets = defaultdict(set)
     # Lookup table for cluster ids, corresponding to compressed buckets
     comp_cid_to_hash = defaultdict(set)
+
     for hash_str, cids_set in max_buckets.iteritems():
         # Convert hash to NumPy array
         hash_array = np.array(list(hash_str), dtype=np.uint8)
@@ -409,7 +413,8 @@ def compress_buckets(num_bits, max_buckets):
         np.random.shuffle(hash_array)
         # Randomly extract num_bits from hash and convert to bitstring
         # This is the compressed hash bitstring
-        comp_hash_str = ''.join(list(hash_array[:num_bits]))
+        hash_array = hash_array[:num_bits]
+        comp_hash_str = ''.join([str(x) for x in hash_array.tolist()])
         # Update buckets and cluster id-to-hash mapping
         comp_buckets[comp_hash_str].update(cids_set)
         for cid in cids_set:
@@ -446,23 +451,24 @@ def next_buckets(num_bits, proj_mat, clusters, doc_id_vecs, buckets, cid_to_hash
 
     while not bucket_size_criterion and num_bits >= 1:
         if num_bits == 1:
-            # Put all clusters in one giant bucket
-            buckets['0'] = buckets['0'].union(buckets['1'])
-            del buckets['1']
-
-            for cid in cid_to_hash:
-                cid_to_hash[cid] = set(['0'])
-
+            # Set number of bits to 0
             num_bits = 0
 
-            b = len(buckets['0'])
+            # Print statistics
+            b = len(buckets['0'].union(buckets['1']))
             print "Number of bits in LSH hash = %d" % num_bits
             print "Median bucket size = %s, mean bucket size = %s, number of pairwise comparisons = %d" % (b, b, b*(b-1)/2)
 
+            # Set buckets and lookup table to empty
+            # Since there is only one bucket, stop using hash tables and
+            # use conventional hierarchical clustering
+            buckets = {}
+            cid_to_hash = {}
+
             break
-        else:
-            # Reduce number of bits in hash
-            num_bits -= 1
+
+        # Reduce number of bits in hash
+        num_bits -= 1
 
         # Calculate buckets
         if use_disjunction:
@@ -523,16 +529,33 @@ def lsh_merge(pdict, doc_id_vecs, num_docs, clusters, metric, target_num_cluster
 
     # Calculate buckets corresponding to maximum number of hash bits
     if use_disjunction:
-        cid_to_hash, max_buckets = compute_buckets_disjunction(max_bits, proj_mat, clusters, doc_id_vecs)
+        max_cid_to_hash, max_buckets = compute_buckets_disjunction(max_bits, proj_mat, clusters, doc_id_vecs)
     else:
-        cid_to_hash, max_buckets = compute_buckets(max_bits, proj_mat, clusters, doc_id_vecs)
+        max_cid_to_hash, max_buckets = compute_buckets(max_bits, proj_mat, clusters, doc_id_vecs)
 
     # Buckets for generating score table
     buckets = max_buckets.copy()
+    cid_to_hash = max_cid_to_hash.copy()
     # Number of hash bits corresponding to variable "buckets"
     num_bits = max_bits
 
-    num_bits, cid_to_hash, buckets = next_buckets(num_bits, proj_mat, clusters, doc_id_vecs, buckets, cid_to_hash, bucket_criterion_function, use_disjunction)
+    cluster_ids = set(clusters.keys())
+    bucket_ids = set()
+    for b in buckets.itervalues():
+        bucket_ids.update(b)
+
+    print "Bucket ids is superset of cluster ids = %s" % bucket_ids.issuperset(cluster_ids)
+    print "Bucket ids is subset of cluster ids = %s" % bucket_ids.issubset(cluster_ids)
+
+    num_bits, cid_to_hash, buckets = next_buckets(num_bits, proj_mat, clusters, doc_id_vecs, cid_to_hash, bucket_criterion_function, buckets, max_buckets=None, use_disjunction=use_disjunction)
+
+    cluster_ids = set(clusters.keys())
+    bucket_ids = set()
+    for b in buckets.itervalues():
+        bucket_ids.update(b)
+
+    print "Bucket ids is superset of cluster ids = %s" % bucket_ids.issuperset(cluster_ids)
+    print "Bucket ids is subset of cluster ids = %s" % bucket_ids.issubset(cluster_ids)
 
     # Generate initial score table, which we call "candidates"
     candidates = generate_score_table_lsh(pdict, clusters, buckets, metric)
@@ -599,44 +622,53 @@ def lsh_merge(pdict, doc_id_vecs, num_docs, clusters, metric, target_num_cluster
 
             # Update hash tables
 
-            # Remove ids for clusters that have been merged
-            # If we are using the conservative method, the new cluster
-            # inherits the hashes from the two clusters that were merged to
-            # form it
-            for h in cid_to_hash[cm1]:
-                buckets[h].remove(cm1)
-                if not use_disjunction:
-                    buckets[h].add(id_next)
+            if num_bits > 0:
+                # Remove ids for clusters that have been merged
+                # If we are using the conservative method, the new cluster
+                # inherits the hashes from the two clusters that were merged to
+                # form it
+                for h in cid_to_hash[cm1]:
+                    buckets[h].remove(cm1)
+                    if not use_disjunction:
+                        buckets[h].add(id_next)
 
-            for h in cid_to_hash[cm2]:
-                buckets[h].remove(cm2)
-                if not use_disjunction:
-                    buckets[h].add(id_next)
+                for h in cid_to_hash[cm2]:
+                    buckets[h].remove(cm2)
+                    if not use_disjunction:
+                        buckets[h].add(id_next)
 
-            # For disjunction method, hash the new cluster and update the
-            # buckets / cluster ID lookup table accordingly
-            if use_disjunction:
-                or_doc_id_vec = np.zeros(num_docs, dtype=np.uint8)
-                for w in clusters[id_next]:
-                    or_doc_id_vec = np.logical_or(or_doc_id_vec, doc_id_vecs[w])
-                # Calculate hash from random projections of OR'd doc id vector
-                proj_hash = np.zeros(num_bits, dtype=np.uint8)
-                proj_hash[np.dot(proj_mat[:num_bits,:], or_doc_id_vec) > 0] = 1
-                # Convert hash to bitstring
-                proj_hash_str = ''.join([str(x) for x in proj_hash.tolist()])
-                # Update buckets and cluster id-to-hash mapping
-                buckets[proj_hash_str].add(id_next)
-                cid_to_hash[id_next].add(proj_hash_str)
-            else:
-                # For the conservative method, the new cluster simply inherits
-                # all the hashes from two clusters that were merged to form it,
-                # so update the cluster id lookup table accordingly
-                cid_to_hash[id_next] = cid_to_hash[cm1].union(cid_to_hash[cm2])
+                # For disjunction method, hash the new cluster and update the
+                # buckets / cluster ID lookup table accordingly
+                if use_disjunction:
+                    or_doc_id_vec = np.zeros(num_docs, dtype=np.uint8)
+                    for w in clusters[id_next]:
+                        or_doc_id_vec = np.logical_or(or_doc_id_vec, doc_id_vecs[w])
+                    # Calculate hash from random projections of OR'd doc id vector
+                    proj_hash = np.zeros(num_bits, dtype=np.uint8)
+                    proj_hash[np.dot(proj_mat[:num_bits,:], or_doc_id_vec) > 0] = 1
+                    # Convert hash to bitstring
+                    proj_hash_str = ''.join([str(x) for x in proj_hash.tolist()])
+                    # Update buckets and cluster id-to-hash mapping
+                    buckets[proj_hash_str].add(id_next)
+                    cid_to_hash[id_next].add(proj_hash_str)
+                else:
+                    # For the conservative method, the new cluster simply inherits
+                    # all the hashes from two clusters that were merged to form it,
+                    # so update the cluster id lookup table accordingly
+                    cid_to_hash[id_next] = cid_to_hash[cm1].union(cid_to_hash[cm2])
 
-            # Delete cluster ids corresponding to merged clusters from
-            # cluster id lookup table
-            del cid_to_hash[cm1]
-            del cid_to_hash[cm2]
+                # Delete cluster ids corresponding to merged clusters from
+                # cluster id lookup table
+                del cid_to_hash[cm1]
+                del cid_to_hash[cm2]
+
+            cluster_ids = set(clusters.keys())
+            bucket_ids = set()
+            for b in buckets.itervalues():
+                bucket_ids.update(b)
+
+            print "Bucket ids is superset of cluster ids = %s" % bucket_ids.issuperset(cluster_ids)
+            print "Bucket ids is subset of cluster ids = %s" % bucket_ids.issubset(cluster_ids)
 
             merges_executed += 1
 
@@ -649,7 +681,20 @@ def lsh_merge(pdict, doc_id_vecs, num_docs, clusters, metric, target_num_cluster
         # Calculate next set of buckets
         print "Compute next set of candidates"
         prev_num_bits = num_bits
-        num_bits, cid_to_hash, buckets = next_buckets(num_bits, proj_mat, clusters, doc_id_vecs, buckets, cid_to_hash, bucket_criterion_function, use_disjunction)
+        if num_bits > 0:
+            ti_next = time.time()
+            num_bits, cid_to_hash, buckets = next_buckets(num_bits, proj_mat, clusters, doc_id_vecs, cid_to_hash, bucket_criterion_function, buckets, max_buckets=None, use_disjunction=use_disjunction)
+            tf_next = time.time()
+            print "Time to calculate next buckets = %s sec" % (tf_next - ti_next)
+
+        cluster_ids = set(clusters.keys())
+        bucket_ids = set()
+        for b in buckets.itervalues():
+            bucket_ids.update(b)
+
+        print "Bucket ids is superset of cluster ids = %s" % bucket_ids.issuperset(cluster_ids)
+        print "Bucket ids is subset of cluster ids = %s" % bucket_ids.issubset(cluster_ids)
+        print "bucket ids - cluster ids = %s" % bucket_ids.difference(cluster_ids)
 
         # Update score table
         if cache and (prev_num_bits == num_bits):
@@ -661,45 +706,77 @@ def lsh_merge(pdict, doc_id_vecs, num_docs, clusters, metric, target_num_cluster
             if verbose: print "Number of deletions = %s" % (old_cand_size - len(candidates))
 
             # Add new candidates corresponding to newly merged clusters
-
             print "Adding new candidates..."
-            # old ids remaining after merges
-            ids = set(sorted(clusters.keys()))
-            remain_old_ids = ids_before_batch.intersection(ids)
-            # new ids before last batch of merges
-            new_ids = ids.difference(ids_before_batch)
 
-            total_cluster_size = 0
-            num_pmi_scores_computed = 0
-            pairs_computed = set()
+            if num_bits > 0:
+                # Update score table according to hash table
 
-            ti_add = time.time()
-            for cid_new in new_ids:
-                for h in cid_to_hash[cid_new]:
-                    for cid in buckets[h]:
-                        if ((cid in remain_old_ids) or (cid > cid_new)):
-                            if tuple(sorted([cid, cid_new])) not in pairs_computed:
-                                score = score_clusters(pdict, metric, clusters[cid], clusters[cid_new])
-                                # Sort cluster IDs in ascending order
-                                pair = tuple(sorted([cid, cid_new]))
-                                candidates.append((pair, score))
-                                pairs_computed.add(pair)
-                                l1 = len(clusters[cid])
-                                l2 = len(clusters[cid_new])
-                                num_pmi_scores_computed += l1*(l1-1)/2 + l2*(l2-1)/2
-                                total_cluster_size += l1 + l2
+                # old ids remaining after merges
+                ids = set(sorted(clusters.keys()))
+                remain_old_ids = ids_before_batch.intersection(ids)
+                # new ids before last batch of merges
+                new_ids = ids.difference(ids_before_batch)
 
-            tf_add = time.time()
+                total_cluster_size = 0
+                num_pmi_scores_computed = 0
+                pairs_computed = set()
 
-            print "Finished adding candidates, added %d candidates, computed %d PMI scores" % (len(pairs_computed), num_pmi_scores_computed)
-            if len(pairs_computed) > 0:
-                print "Avg cluster size = %s, avg time per PMI score computed = %s microsec" % ((float(total_cluster_size)/(len(pairs_computed)*2)), (tf_add-ti_add)/num_pmi_scores_computed*1e6)
+                ti_add = time.time()
+                for cid_new in new_ids:
+                    for h in cid_to_hash[cid_new]:
+                        for cid in buckets[h]:
+                            if ((cid in remain_old_ids) or (cid > cid_new)):
+                                if tuple(sorted([cid, cid_new])) not in pairs_computed:
+                                    score = score_clusters(pdict, metric, clusters[cid], clusters[cid_new])
+                                    # Sort cluster IDs in ascending order
+                                    pair = tuple(sorted([cid, cid_new]))
+                                    candidates.append((pair, score))
+                                    pairs_computed.add(pair)
+                                    l1 = len(clusters[cid])
+                                    l2 = len(clusters[cid_new])
+                                    num_pmi_scores_computed += l1*(l1-1)/2 + l2*(l2-1)/2
+                                    total_cluster_size += l1 + l2
+
+                tf_add = time.time()
+
+                print "Finished adding candidates, added %d candidates, computed %d PMI scores" % (len(pairs_computed), num_pmi_scores_computed)
+                if len(pairs_computed) > 0:
+                    print "Avg cluster size = %s, avg time per PMI score computed = %s microsec" % ((float(total_cluster_size)/(len(pairs_computed)*2)), (tf_add-ti_add)/num_pmi_scores_computed*1e6)
+
+            else:
+                # Ignore hash table and update score table according to clusters
+
+                # Add new candidates corresponding to newly merged clusters
+                ids = sorted(clusters.keys())
+                # old ids remaining after merges
+                remain_old_ids = ids_before_batch.intersection(set(ids))
+                if remain_old_ids:
+                    # Find newest "old" cluster id
+                    last_id = max(remain_old_ids)
+                    last_idx = ids.index(last_id)
+                else:
+                    # Case where all the old clusters were merged during
+                    # the last iteration (remain_old_ids is empty set)
+                    last_idx = -1
+                # Calculate new scores for 1) new id - new id, 2) new id - old id
+                # where new ids correspond to newly merged clusters
+                for i in range(last_idx+1, len(ids)):
+                    for j in range(i):
+                        score = score_clusters(pdict, metric, clusters[ids[j]], clusters[ids[i]])
+                        # Sort cluster IDs in ascending order
+                        pair = tuple(sorted([ids[j], ids[i]]))
+                        candidates.append((pair, score))
 
         else:
             # No caching, re-generate entire score table
-            candidates = generate_score_table_lsh(pdict, clusters, buckets, metric)
+            if num_bits > 0:
+                ti_generate = time.time()
+                candidates = generate_score_table_lsh(pdict, clusters, buckets, metric)
+                tf_generate = time.time()
+                print "Time to generate new score table = %s sec" % (tf_generate-ti_generate)
+            else:
+                candidates = generate_score_table_hac(pdict, clusters, metric)
             if verbose: print "Number of candidates = %s" % (len(candidates))
-
 
         # Sort score table
         candidates = sort_score_table(candidates, metric, stable)
