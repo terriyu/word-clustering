@@ -392,7 +392,7 @@ def compute_buckets_disjunction(num_bits, proj_mat, clusters, doc_id_vecs):
 
     return cid_to_hash, buckets
 
-def cache_buckets(max_bits, proj_mat, clusters, doc_id_vecs):
+def cache_buckets(max_bits, proj_mat, clusters, doc_id_vecs, use_disjunction):
     """ Compute LSH buckets for number of bits from 1 to max_bits and
         cache in dictionary
     """
@@ -410,15 +410,17 @@ def cache_buckets(max_bits, proj_mat, clusters, doc_id_vecs):
     for i in range(max_bits-1, 0, -1):
         reduced_buckets = defaultdict(set)
         reduced_cid_to_hash = defaultdict(set)
+        # Compute permutation for random selection of indices
+        perm = np.arange(max_bits)
+        np.random.shuffle(perm)
+        # Random indices to extract
+        random_idx = perm[:i]
         for hash_str, cids_set in max_buckets.iteritems():
             # Convert hash to NumPy array
             hash_array = np.array(list(hash_str), dtype=np.uint8)
-            # Permute hash
-            # Note: random.shuffle() seems faster than random.choice()
-            np.random.shuffle(hash_array)
             # Randomly extract num_bits from hash and convert to bitstring
             # This is the compressed hash bitstring
-            hash_array = hash_array[:i]
+            hash_array = hash_array[random_idx]
             reduced_hash_str = ''.join([str(x) for x in hash_array.tolist()])
             # Update buckets and cluster id-to-hash mapping
             reduced_buckets[reduced_hash_str].update(cids_set)
@@ -478,7 +480,49 @@ def bucket_stats(buckets):
     # Return stats in alphabetical order by variable name
     return mean_bucket_size, median_bucket_size, num_pairwise_comparisons
 
-def next_buckets(num_bits, proj_mat, clusters, doc_id_vecs, buckets, cid_to_hash, criterion_function, use_disjunction=False):
+def update_buckets(cm1, cm2, id_next, buckets, cid_to_hash, doc_id_vecs, num_bits, proj_mat, clusters, use_disjunction):
+    # Remove ids for clusters that have been merged
+    # If we are using the conservative method, the new cluster
+    # inherits the hashes from the two clusters that were merged to
+    # form it
+    for h in cid_to_hash[cm1]:
+        buckets[h].remove(cm1)
+        if not use_disjunction:
+            buckets[h].add(id_next)
+
+    for h in cid_to_hash[cm2]:
+        buckets[h].remove(cm2)
+        if not use_disjunction:
+            buckets[h].add(id_next)
+
+    # For disjunction method, hash the new cluster and update the
+    # buckets / cluster ID lookup table accordingly
+    if use_disjunction:
+        or_doc_id_vec = np.zeros(num_docs, dtype=np.uint8)
+        for w in clusters[id_next]:
+            or_doc_id_vec = np.logical_or(or_doc_id_vec, doc_id_vecs[w])
+        # Calculate hash from random projections of OR'd doc id vector
+        proj_hash = np.zeros(num_bits, dtype=np.uint8)
+        proj_hash[np.dot(proj_mat[:num_bits,:], or_doc_id_vec) > 0] = 1
+        # Convert hash to bitstring
+        proj_hash_str = ''.join([str(x) for x in proj_hash.tolist()])
+        # Update buckets and cluster id-to-hash mapping
+        buckets[proj_hash_str].add(id_next)
+        cid_to_hash[id_next].add(proj_hash_str)
+    else:
+        # For the conservative method, the new cluster simply inherits
+        # all the hashes from two clusters that were merged to form it,
+        # so update the cluster id lookup table accordingly
+        cid_to_hash[id_next] = cid_to_hash[cm1].union(cid_to_hash[cm2])
+
+    # Delete cluster ids corresponding to merged clusters from
+    # cluster id lookup table
+    del cid_to_hash[cm1]
+    del cid_to_hash[cm2]
+
+    return cid_to_hash, buckets
+
+def next_buckets(num_bits, proj_mat, clusters, doc_id_vecs, buckets, cid_to_hash, criterion_function, use_disjunction, cache_lsh, buckets_cached=None, cid_to_hash_cached=None):
     """ Return next set of buckets that satisfy the given criterion
     """
     # Calculate bucket statistics
@@ -511,10 +555,16 @@ def next_buckets(num_bits, proj_mat, clusters, doc_id_vecs, buckets, cid_to_hash
         num_bits -= 1
 
         # Calculate buckets
-        if use_disjunction:
-            cid_to_hash, buckets = compute_buckets_disjunction(num_bits, proj_mat, clusters, doc_id_vecs)
+        if cache_lsh:
+            print "cache lsh"
+            cid_to_hash = cid_to_hash_cached[num_bits]
+            buckets = buckets_cached[num_bits]
         else:
-            cid_to_hash, buckets = compute_buckets(num_bits, proj_mat, clusters, doc_id_vecs)
+            proj_mat = np.random.rand(num_bits, num_docs) - 0.5
+            if use_disjunction:
+                cid_to_hash, buckets = compute_buckets_disjunction(num_bits, proj_mat, clusters, doc_id_vecs)
+            else:
+                cid_to_hash, buckets = compute_buckets(num_bits, proj_mat, clusters, doc_id_vecs)
 
         # Calculate bucket statistics
         mean_bucket_size, median_bucket_size, num_pairwise_comparisons = bucket_stats(buckets)
@@ -525,7 +575,7 @@ def next_buckets(num_bits, proj_mat, clusters, doc_id_vecs, buckets, cid_to_hash
 
     return num_bits, cid_to_hash, buckets
 
-def lsh_merge(pdict, doc_id_vecs, num_docs, clusters, metric, target_num_clusters, merges_per_batch, use_disjunction, stable, cache, verbose):
+def lsh_merge(pdict, doc_id_vecs, num_docs, clusters, metric, target_num_clusters, merges_per_batch, use_disjunction, cache_lsh, stable, cache_scores, verbose):
     """ Performs LSH-based hierarchical agglomerative clustering (HAC)
 
         Does specified number of merges per iteration and uses caching if flag is set to True
@@ -562,20 +612,24 @@ def lsh_merge(pdict, doc_id_vecs, num_docs, clusters, metric, target_num_cluster
     bucket_criterion_function = criterion('num_pairs')
 
     # To start, number of buckets approximately equal to number of documents
-    max_bits = np.ceil(np.log2(num_docs))
+    max_bits = int(np.ceil(np.log2(num_docs)))
 
     # Generate random projection matrix
     proj_mat = np.random.rand(max_bits, num_docs) - 0.5
 
     # Calculate buckets corresponding to maximum number of hash bits
-    if use_disjunction:
-        max_cid_to_hash, max_buckets = compute_buckets_disjunction(max_bits, proj_mat, clusters, doc_id_vecs)
+    if cache_lsh:
+        cid_to_hash_cached, buckets_cached = cache_buckets(max_bits, proj_mat, clusters, doc_id_vecs, use_disjunction)
+        cid_to_hash = cid_to_hash_cached[max_bits]
+        buckets = buckets_cached[max_bits]
     else:
-        max_cid_to_hash, max_buckets = compute_buckets(max_bits, proj_mat, clusters, doc_id_vecs)
+        cid_to_hash_cached = None
+        buckets_cached = None
+        if use_disjunction:
+            cid_to_hash, buckets = compute_buckets_disjunction(max_bits, proj_mat, clusters, doc_id_vecs)
+        else:
+            cid_to_hash, buckets = compute_buckets(max_bits, proj_mat, clusters, doc_id_vecs)
 
-    # Buckets for generating score table
-    buckets = max_buckets.copy()
-    cid_to_hash = max_cid_to_hash.copy()
     # Number of hash bits corresponding to variable "buckets"
     num_bits = max_bits
 
@@ -587,7 +641,7 @@ def lsh_merge(pdict, doc_id_vecs, num_docs, clusters, metric, target_num_cluster
     print "Bucket ids is superset of cluster ids = %s" % bucket_ids.issuperset(cluster_ids)
     print "Bucket ids is subset of cluster ids = %s" % bucket_ids.issubset(cluster_ids)
 
-    num_bits, cid_to_hash, buckets = next_buckets(num_bits, proj_mat, clusters, doc_id_vecs, buckets, cid_to_hash, bucket_criterion_function, use_disjunction=use_disjunction)
+    num_bits, cid_to_hash, buckets = next_buckets(num_bits, proj_mat, clusters, doc_id_vecs, buckets, cid_to_hash, bucket_criterion_function, use_disjunction=use_disjunction, cache_lsh=cache_lsh, buckets_cached=buckets_cached, cid_to_hash_cached=cid_to_hash_cached)
 
     cluster_ids = set(clusters.keys())
     bucket_ids = set()
@@ -663,44 +717,11 @@ def lsh_merge(pdict, doc_id_vecs, num_docs, clusters, metric, target_num_cluster
             # Update hash tables
 
             if num_bits > 0:
-                # Remove ids for clusters that have been merged
-                # If we are using the conservative method, the new cluster
-                # inherits the hashes from the two clusters that were merged to
-                # form it
-                for h in cid_to_hash[cm1]:
-                    buckets[h].remove(cm1)
-                    if not use_disjunction:
-                        buckets[h].add(id_next)
+                cid_to_hash, buckets = update_buckets(cm1, cm2, id_next, buckets, cid_to_hash, doc_id_vecs, num_bits, proj_mat, clusters, use_disjunction)
 
-                for h in cid_to_hash[cm2]:
-                    buckets[h].remove(cm2)
-                    if not use_disjunction:
-                        buckets[h].add(id_next)
-
-                # For disjunction method, hash the new cluster and update the
-                # buckets / cluster ID lookup table accordingly
-                if use_disjunction:
-                    or_doc_id_vec = np.zeros(num_docs, dtype=np.uint8)
-                    for w in clusters[id_next]:
-                        or_doc_id_vec = np.logical_or(or_doc_id_vec, doc_id_vecs[w])
-                    # Calculate hash from random projections of OR'd doc id vector
-                    proj_hash = np.zeros(num_bits, dtype=np.uint8)
-                    proj_hash[np.dot(proj_mat[:num_bits,:], or_doc_id_vec) > 0] = 1
-                    # Convert hash to bitstring
-                    proj_hash_str = ''.join([str(x) for x in proj_hash.tolist()])
-                    # Update buckets and cluster id-to-hash mapping
-                    buckets[proj_hash_str].add(id_next)
-                    cid_to_hash[id_next].add(proj_hash_str)
-                else:
-                    # For the conservative method, the new cluster simply inherits
-                    # all the hashes from two clusters that were merged to form it,
-                    # so update the cluster id lookup table accordingly
-                    cid_to_hash[id_next] = cid_to_hash[cm1].union(cid_to_hash[cm2])
-
-                # Delete cluster ids corresponding to merged clusters from
-                # cluster id lookup table
-                del cid_to_hash[cm1]
-                del cid_to_hash[cm2]
+                if cache_lsh:
+                    for i in range(1, num_bits):
+                        cid_to_hash_cached[i], buckets_cached[i] = update_buckets(cm1, cm2, id_next, buckets_cached[i], cid_to_hash_cached[i], doc_id_vecs, num_bits, proj_mat, clusters, use_disjunction)
 
             cluster_ids = set(clusters.keys())
             bucket_ids = set()
@@ -723,7 +744,8 @@ def lsh_merge(pdict, doc_id_vecs, num_docs, clusters, metric, target_num_cluster
         prev_num_bits = num_bits
         if num_bits > 0:
             ti_next = time.time()
-            num_bits, cid_to_hash, buckets = next_buckets(num_bits, proj_mat, clusters, doc_id_vecs, buckets, cid_to_hash, bucket_criterion_function, use_disjunction=use_disjunction)
+            num_bits, cid_to_hash, buckets = next_buckets(num_bits, proj_mat, clusters, doc_id_vecs, buckets, cid_to_hash, bucket_criterion_function, use_disjunction=use_disjunction, cache_lsh=cache_lsh, buckets_cached=buckets_cached, cid_to_hash_cached=cid_to_hash_cached)
+
             tf_next = time.time()
             print "Time to calculate next buckets = %s sec" % (tf_next - ti_next)
 
@@ -737,7 +759,7 @@ def lsh_merge(pdict, doc_id_vecs, num_docs, clusters, metric, target_num_cluster
         print "bucket ids - cluster ids = %s" % bucket_ids.difference(cluster_ids)
 
         # Update score table
-        if cache and (prev_num_bits == num_bits):
+        if cache_scores and (prev_num_bits == num_bits):
             print "Deleting candidates..."
             # Delete candidates containing the clusters we just merged
             old_cand_size = len(candidates)
@@ -823,7 +845,7 @@ def lsh_merge(pdict, doc_id_vecs, num_docs, clusters, metric, target_num_cluster
 
     return clusters_target, merge_tree
 
-def hac_merge(pdict, clusters, metric, target_num_clusters, merges_per_batch, stable, cache, verbose):
+def hac_merge(pdict, clusters, metric, target_num_clusters, merges_per_batch, stable, cache_scores, verbose):
     """ Performs hierarchical agglomerative clustering (HAC)
 
         Does specified number of merges per iteration and uses caching if flag is set to True
@@ -897,7 +919,7 @@ def hac_merge(pdict, clusters, metric, target_num_clusters, merges_per_batch, st
             id_next += 1
 
         # Finish updating score table
-        if cache:
+        if cache_scores:
             # Delete candidates containing the clusters we just merged
             old_cand_size = len(candidates)
             candidates = [c for c in candidates if not ids_merged.intersection(c[0])]
@@ -933,7 +955,7 @@ def hac_merge(pdict, clusters, metric, target_num_clusters, merges_per_batch, st
 
     return clusters_target, merge_tree
 
-def calculate_clusters(pdict, single_counts, vocab, metric, target_num_clusters, method='hac', stable=True, doc_id_vec=None, num_docs=None, num_freq_words=100, merges_per_batch=1, use_disjunction=False, cache=True, verbose=False):
+def calculate_clusters(pdict, single_counts, vocab, metric, target_num_clusters, method='hac', stable=True, doc_id_vec=None, num_docs=None, num_freq_words=100, merges_per_batch=1, use_disjunction=False, cache_scores=True, verbose=False):
     """ Calculate target number of clusters using specified metric and greedy approaches
 
         Options:
@@ -969,12 +991,12 @@ def calculate_clusters(pdict, single_counts, vocab, metric, target_num_clusters,
         # Generate initial clusters
         for idx, v_word in enumerate(vocab):
             clusters[idx] = [v_word]
-        clusters, merge_tree = lsh_merge(pdict, doc_id_vec, num_docs, clusters, metric, target_num_clusters, merges_per_batch, use_disjunction, stable=True, cache=True, verbose=False)
+        clusters, merge_tree = lsh_merge(pdict, doc_id_vec, num_docs, clusters, metric, target_num_clusters, merges_per_batch, use_disjunction, cache_lsh=True, stable=True, cache_scores=True, verbose=False)
     elif method == 'hac':
         # Generate initial clusters
         for idx, v_word in enumerate(vocab):
             clusters[idx] = [v_word]
-        clusters, merge_tree = hac_merge(pdict, clusters, metric, target_num_clusters, merges_per_batch, stable, cache, verbose)
+        clusters, merge_tree = hac_merge(pdict, clusters, metric, target_num_clusters, merges_per_batch, stable, cache_scores, verbose)
 
     return clusters, merge_tree
 
